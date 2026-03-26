@@ -14,7 +14,7 @@ func corsMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Access-Control-Allow-Origin", "*")
         w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-KEY")
         if r.Method == "OPTIONS" {
             w.WriteHeader(http.StatusNoContent)
             return
@@ -44,7 +44,6 @@ func main() {
 	}
 
 	r := mux.NewRouter()
-	r.Use(corsMiddleware)
 
 	r.HandleFunc("/auth/verify", VerifyKeyHandler).Methods("GET")
 	r.HandleFunc("/ws/notifications", NotificationHandler)
@@ -55,5 +54,6 @@ func main() {
 	api.HandleFunc("/files/{id}", AuthMiddleware(DownloadHandler)).Methods("GET")
 
 	log.Println("Dropzone API running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	
+	log.Fatal(http.ListenAndServe(":8080", corsMiddleware(r)))
 }

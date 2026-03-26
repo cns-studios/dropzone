@@ -18,19 +18,40 @@
         </div>
 
         <div id="main-drop" class="screen hidden">
+            <div id="top-bar">
+                <span id="owner-label"></span>
+                <button id="btn-settings" class="icon-btn" title="Settings">⚙</button>
+            </div>
+
             <div id="drop-area">
                 <div class="icon">📥</div>
                 <h2>Drop Files Here</h2>
                 <p id="status-text">Ready to sync</p>
             </div>
-            
-            <div id="qr-container">
-                <p>Scan to pair Android</p>
-                <div id="qrcode"></div>
-                <button id="btn-reset" class="secondary">Reset Settings</button>
+
+            <div id="recent-files">
+                <p class="section-label">Recent</p>
+                <div id="file-list"></div>
             </div>
         </div>
-    </div>
+
+        <div id="settings" class="screen hidden">
+            <div id="top-bar">
+                <span class="section-label">Settings</span>
+                <button id="btn-back" class="icon-btn">✕</button>
+            </div>
+            <div class="settings-body">
+                <div class="setting-row"><span class="s-label">Name</span><span id="s-owner" class="s-val"></span></div>
+                <div class="setting-row"><span class="s-label">API Key</span><span id="s-key" class="s-val mono"></span></div>
+                <div class="setting-row"><span class="s-label">Server</span><span id="s-url" class="s-val mono"></span></div>
+                <div id="qr-container">
+                    <p>Scan to pair Android</p>
+                    <div id="qrcode"></div>
+                </div>
+                <button id="btn-reset" class="danger">Reset Settings</button>
+            </div>
+        </div>
+      </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script type="module" src="main.js"></script>

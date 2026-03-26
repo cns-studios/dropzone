@@ -95,3 +95,66 @@ button {
     margin-top: 10px;
     font-size: 0.8rem;
 }
+
+
+#top-bar {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.icon-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1.1rem;
+    cursor: pointer;
+    width: auto;
+    padding: 4px 8px;
+}
+
+.section-label { color: var(--text-dim); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; }
+
+#recent-files { width: 100%; margin-top: 10px; overflow-y: auto; max-height: 160px; }
+
+.file-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: #1e1e1e;
+    margin-bottom: 4px;
+    font-size: 0.85rem;
+}
+
+.file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
+
+.file-dl {
+    color: var(--accent);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 0;
+    width: auto;
+}
+
+.settings-body { width: 100%; display: flex; flex-direction: column; gap: 12px; }
+
+.setting-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #1e1e1e;
+    border-radius: 8px;
+    font-size: 0.85rem;
+}
+
+.s-label { color: var(--text-dim); }
+.s-val { max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mono { font-family: monospace; font-size: 0.75rem; }
+
+.danger { background: transparent; border: 1px solid #ff4d4d; color: #ff4d4d; margin-top: 8px; }

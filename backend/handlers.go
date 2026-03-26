@@ -89,7 +89,7 @@ func ListFilesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var files []FileMetadata
+	files := []FileMetadata{}
 	for rows.Next() {
 		var f FileMetadata
 		rows.Scan(&f.ID, &f.FileName, &f.FileSize, &f.UploadedAt)
