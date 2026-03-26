@@ -10,6 +10,19 @@ import (
 	_ "github.com/lib/pq"
 )
 
+func corsMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Access-Control-Allow-Origin", "*")
+        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        if r.Method == "OPTIONS" {
+            w.WriteHeader(http.StatusNoContent)
+            return
+        }
+        next.ServeHTTP(w, r)
+    })
+}
+
 func main() {
 	dbURL := os.Getenv("DB_URL")
 	if dbURL == "" {
@@ -31,6 +44,7 @@ func main() {
 	}
 
 	r := mux.NewRouter()
+	r.Use(corsMiddleware)
 
 	r.HandleFunc("/auth/verify", VerifyKeyHandler).Methods("GET")
 	r.HandleFunc("/ws/notifications", NotificationHandler)
