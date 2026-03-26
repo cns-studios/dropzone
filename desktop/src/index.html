@@ -8,50 +8,126 @@
 </head>
 <body>
     <div id="app" class="container">
-            <div id="onboarding" class="screen">
-            <h1>Welcome to Dropzone</h1>
-            <p>Enter your credentials to start syncing.</p>
-            <input type="text" id="api-key" placeholder="API Key (UUID)" />
-            <input type="text" id="server-url" placeholder="Server URL (http://ip:8080)" />
-            <button id="btn-save">Start Dropzone</button>
-            <p class="hint">Hotkey: <strong>Ctrl + Shift + D</strong></p>
+
+        <div id="onboarding" class="screen">
+            <div class="ob-icon-wrap">
+                <svg viewBox="0 0 24 24"><path d="M12 3v11M12 14l-4-4M12 14l4-4"/><path d="M5 19h14"/></svg>
+            </div>
+            <div class="ob-title">Welcome to Dropzone</div>
+            <div class="ob-sub">Share files to your devices in seconds.</div>
+
+            <div class="info-list">
+                <div class="info-row">
+                    <div class="info-pip">
+                        <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+                    </div>
+                    <div>
+                        <div class="info-title">It lives in your taskbar</div>
+                        <div class="info-desc">Dropzone runs quietly in the background. Click the tray icon anytime to bring it up.</div>
+                    </div>
+                </div>
+                <div class="info-row">
+                    <div class="info-pip">
+                        <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </div>
+                    <div>
+                        <div class="info-title">Closing just hides it</div>
+                        <div class="info-desc">Pressing <strong>ESC</strong> or the close button won't quit the app — it just tucks away quietly.</div>
+                    </div>
+                </div>
+                <div class="info-row">
+                    <div class="info-pip">
+                        <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    </div>
+                    <div>
+                        <div class="info-title">Lightweight &amp; fast</div>
+                        <div class="info-desc">Built with Tauri, not Electron - Dropzone uses barely any memory and opens instantly.</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="field-group">
+                <div class="field">
+                    <div class="field-label">Your API Key</div>
+                    <input type="password" id="api-key" placeholder="Paste the key you were given" />
+                </div>
+                <div class="field">
+                    <div class="field-label">Server Address</div>
+                    <input type="text" id="server-url" placeholder="https://drop.cns-studios.com" />
+                </div>
+            </div>
+            <button class="btn btn-primary" id="btn-save">Get started →</button>
+            <p class="hint">Open anytime with <strong>Ctrl + Shift + D</strong></p>
         </div>
 
         <div id="main-drop" class="screen hidden">
-            <div id="top-bar">
-                <span id="owner-label"></span>
-                <button id="btn-settings" class="icon-btn" title="Settings">⚙</button>
+            <div class="titlebar">
+                <div class="titlebar-inner">
+                    <div class="topbar-left">
+                        <div class="status-dot"></div>
+                        <span class="topbar-name" id="owner-label"></span>
+                    </div>
+                    <div class="topbar-right">
+                        <div class="icon-btn" id="btn-settings" title="Settings">
+                            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div id="drop-area">
-                <div class="icon">📥</div>
-                <h2>Drop Files Here</h2>
-                <p id="status-text">Ready to sync</p>
+                <div class="drop-icon-wrap">
+                    <svg viewBox="0 0 24 24"><path d="M12 3v11M12 14l-4-4M12 14l4-4"/><path d="M5 19h14"/></svg>
+                </div>
+                <div class="drop-title">Drop a file here</div>
             </div>
 
-            <div id="recent-files">
-                <p class="section-label">Recent</p>
-                <div id="file-list"></div>
+            <div class="hotkey-strip">
+                <span class="hotkey-text">Hide with</span>
+                <span class="kbd">ESC</span>
+            </div>
+
+            <div class="section">
+                <span class="section-label">Recently uploaded</span>
+                <div id="file-list" class="file-list"></div>
             </div>
         </div>
 
         <div id="settings" class="screen hidden">
-            <div id="top-bar">
-                <span class="section-label">Settings</span>
-                <button id="btn-back" class="icon-btn">✕</button>
-            </div>
-            <div class="settings-body">
-                <div class="setting-row"><span class="s-label">Name</span><span id="s-owner" class="s-val"></span></div>
-                <div class="setting-row"><span class="s-label">API Key</span><span id="s-key" class="s-val mono"></span></div>
-                <div class="setting-row"><span class="s-label">Server</span><span id="s-url" class="s-val mono"></span></div>
-                <div id="qr-container">
-                    <p>Scan to pair Android</p>
-                    <div id="qrcode"></div>
+            <div class="titlebar">
+                <div class="titlebar-inner">
+                    <span style="font-size:14px;font-weight:700;color:var(--text);">Settings</span>
+                    <div class="topbar-right">
+                        <div class="icon-btn" id="btn-back">
+                            <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                        </div>
+                    </div>
                 </div>
-                <button id="btn-reset" class="danger">Reset Settings</button>
+            </div>
+
+            <div class="settings-wrap">
+                <div class="settings-group">
+                    <div class="settings-group-label">Your account</div>
+                    <div class="settings-card">
+                        <div class="setting-row"><span class="s-key">Name</span><span class="s-val" id="s-owner"></span></div>
+                        <div class="setting-row"><span class="s-key">API Key</span><span class="s-val muted" id="s-key"></span></div>
+                        <div class="setting-row"><span class="s-key">Server</span><span class="s-val muted" id="s-url"></span></div>
+                    </div>
+                </div>
+
+                <div class="settings-group">
+                    <div class="settings-group-label">Pair with your phone</div>
+                    <div class="qr-card">
+                        <div id="qrcode" class="qr-box"></div>
+                        <div class="qr-desc">Scan this with the Dropzone app on your phone to connect automatically.</div>
+                    </div>
+                </div>
+
+                <button id="btn-reset" class="btn-danger">Sign out &amp; reset</button>
             </div>
         </div>
-      </div>
+
+    </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script type="module" src="main.js"></script>
