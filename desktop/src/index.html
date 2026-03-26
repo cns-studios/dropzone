@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="style.css" />
+    <title>Dropzone</title>
+</head>
+<body>
+    <div id="app" class="container">
+            <div id="onboarding" class="screen">
+            <h1>Welcome to Dropzone</h1>
+            <p>Enter your credentials to start syncing.</p>
+            <input type="text" id="api-key" placeholder="API Key (UUID)" />
+            <input type="text" id="server-url" placeholder="Server URL (http://ip:8080)" />
+            <button id="btn-save">Start Dropzone</button>
+            <p class="hint">Hotkey: <strong>Ctrl + Shift + D</strong></p>
+        </div>
+
+        <div id="main-drop" class="screen hidden">
+            <div id="drop-area">
+                <div class="icon">📥</div>
+                <h2>Drop Files Here</h2>
+                <p id="status-text">Ready to sync</p>
+            </div>
+            
+            <div id="qr-container">
+                <p>Scan to pair Android</p>
+                <div id="qrcode"></div>
+                <button id="btn-reset" class="secondary">Reset Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script type="module" src="main.js"></script>
+</body>
+</html>
