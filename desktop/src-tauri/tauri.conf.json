@@ -17,7 +17,7 @@
         "height": 500,
         "resizable": false,
         "fullscreen": false,
-        "visible": false,
+        "visible": true,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true

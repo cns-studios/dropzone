@@ -18,11 +18,43 @@ let onboardingScreen, mainScreen, dropArea, statusText;
 
 async function init() {
     console.log("Initializing Dropzone UI...");
-    
+
     onboardingScreen = document.getElementById('onboarding');
     mainScreen = document.getElementById('main-drop');
     dropArea = document.getElementById('drop-area');
     statusText = document.getElementById('status-text');
+
+    document.getElementById('btn-save').addEventListener('click', async () => {
+        const key = document.getElementById('api-key').value.trim();
+        let url = document.getElementById('server-url').value.trim();
+
+        if (!key || !url) {
+            alert("Please fill all fields");
+            return;
+        }
+
+        if (url.endsWith('/')) url = url.slice(0, -1);
+
+        try {
+            const response = await fetch(`${url}/auth/verify?key=${key}`);
+            if (response.ok) {
+                localStorage.setItem('dropzone_key', key);
+                localStorage.setItem('dropzone_url', url);
+                config = { apiKey: key, serverUrl: url };
+                showMain();
+            } else {
+                alert("Invalid API Key");
+            }
+        } catch (e) {
+            console.error(e);
+            alert("Server unreachable: " + url);
+        }
+    });
+
+    document.getElementById('btn-reset').addEventListener('click', () => {
+        localStorage.clear();
+        window.location.reload();
+    });
 
     const tauri = getTauriApi();
 
@@ -94,37 +126,6 @@ async function setupTauriListeners() {
     }
 }
 
-document.getElementById('btn-save').addEventListener('click', async () => {
-    const key = document.getElementById('api-key').value.trim();
-    let url = document.getElementById('server-url').value.trim();
-
-    if (!key || !url) {
-        alert("Please fill all fields");
-        return;
-    }
-    
-    if (url.endsWith('/')) url = url.slice(0, -1);
-
-    try {
-        const response = await fetch(`${url}/auth/verify?key=${key}`);
-        if (response.ok) {
-            localStorage.setItem('dropzone_key', key);
-            localStorage.setItem('dropzone_url', url);
-            config = { apiKey: key, serverUrl: url };
-            showMain();
-        } else {
-            alert("Invalid API Key");
-        }
-    } catch (e) {
-        console.error(e);
-        alert("Server unreachable: " + url);
-    }
-});
-
-document.getElementById('btn-reset').addEventListener('click', () => {
-    localStorage.clear();
-    window.location.reload();
-});
 
 async function uploadFiles(paths) {
     if (!statusText || !dropArea) return;
