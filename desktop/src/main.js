@@ -6,14 +6,66 @@ const getTauriApi = () => {
     }
 };
 
+// Generic HTTP wrapper that uses Tauri HTTP client (no CORS) when available
+async function httpRequest(url, options = {}) {
+    const tauri = getTauriApi();
+    
+    // Try Tauri HTTP client first (bypasses CORS completely)
+    if (tauri && tauri.http) {
+        try {
+            const headers = options.headers || {};
+            const body = options.body;
+            
+            const response = await tauri.http.fetch(url, {
+                method: options.method || 'GET',
+                headers,
+                body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+            });
+            
+            // Convert Tauri response to Fetch-like response object
+            return {
+                ok: response.status >= 200 && response.status < 300,
+                status: response.status,
+                async json() {
+                    return JSON.parse(response.data);
+                },
+                async text() {
+                    return response.data;
+                },
+                async blob() {
+                    const encoder = new TextEncoder();
+                    return new Blob([encoder.encode(response.data)]);
+                },
+                data: response.data,
+                headers: response.headers || {},
+            };
+        } catch (e) {
+            console.log("Tauri HTTP failed, trying fetch:", e);
+        }
+    }
+    
+    // Fallback to standard fetch
+    return fetch(url, options);
+}
+
 let appWindow = null;
 let listen = null;
+
+const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
+
+const DURATIONS = [
+    { value: '24h', label: '24 hours' },
+    { value: '7d',  label: '7 days'   },
+    { value: '30d', label: '30 days'  },
+    { value: '90d', label: '90 days'  },
+];
 
 function loadConfig() {
     config = {
         apiKey: localStorage.getItem('dropzone_key'),
         serverUrl: localStorage.getItem('dropzone_url'),
-        ownerName: localStorage.getItem('dropzone_owner')
+        ownerName: localStorage.getItem('dropzone_owner'),
+        duration: localStorage.getItem('dropzone_duration') || '7d',
     };
 }
 let config = {};
@@ -21,7 +73,6 @@ loadConfig();
 
 let onboardingScreen, mainScreen, dropArea, statusText;
 
-// Maps file extension → { bg, color }
 const EXT_COLORS = {
     pdf:  { bg: '#fde8e8', color: '#c0392b' },
     zip:  { bg: '#e8f0fd', color: '#2b5cc0' },
@@ -62,11 +113,37 @@ function formatSize(bytes) {
 
 function timeAgo(dateStr) {
     const diff = Math.floor((Date.now() - new Date(dateStr)) / 1000);
-    if (diff < 10)  return 'just now';
-    if (diff < 60)  return diff + 's ago';
+    const abs = Math.abs(diff);
+
+    if (abs < 10) return 'just now';
+
+    if (diff < 0) {
+        if (abs < 60) return 'in ' + abs + 's';
+        if (abs < 3600) return 'in ' + Math.floor(abs / 60) + ' min';
+        if (abs < 86400) return 'in ' + Math.floor(abs / 3600) + ' hr';
+        return 'in ' + Math.floor(abs / 86400) + 'd';
+    }
+
+    if (diff < 60) return diff + 's ago';
     if (diff < 3600) return Math.floor(diff / 60) + ' min ago';
     if (diff < 86400) return Math.floor(diff / 3600) + ' hr ago';
     return Math.floor(diff / 86400) + 'd ago';
+}
+
+async function verifyKey(url, key) {
+    try {
+        const response = await httpRequest(`${url}/desktop/auth/verify?key=${key}`, {
+            method: 'GET'
+        });
+        if (response.ok) {
+            const data = await response.json();
+            return { ok: true, data };
+        }
+        return { ok: false };
+    } catch (e) {
+        console.error(e);
+        throw e;
+    }
 }
 
 async function init() {
@@ -87,13 +164,12 @@ async function init() {
         if (url.endsWith('/')) url = url.slice(0, -1);
 
         try {
-            const response = await fetch(`${url}/auth/verify?key=${key}`);
-            if (response.ok) {
+            const result = await verifyKey(url, key);
+            if (result.ok) {
                 localStorage.setItem('dropzone_key', key);
                 localStorage.setItem('dropzone_url', url);
-                const data = await response.json();
-                localStorage.setItem('dropzone_owner', data.owner);
-                config.ownerName = data.owner;
+                localStorage.setItem('dropzone_owner', result.data.owner);
+                config.ownerName = result.data.owner;
                 showMain();
             } else {
                 alert("Invalid API Key");
@@ -145,7 +221,7 @@ function showMain() {
     mainScreen.classList.remove('hidden');
     loadConfig();
 
-    // QR code
+    
     const qrDiv = document.getElementById('qrcode');
     if (qrDiv) {
         qrDiv.innerHTML = '';
@@ -175,6 +251,22 @@ function showMain() {
         document.getElementById('settings').classList.add('hidden');
         mainScreen.classList.remove('hidden');
     });
+
+    const pickerContainer = document.getElementById('duration-picker');
+    if (pickerContainer) {
+        pickerContainer.innerHTML = DURATIONS.map(d =>
+            `<button class="dur-btn${config.duration === d.value ? ' active' : ''}"
+                     data-value="${d.value}">${d.label}</button>`
+        ).join('');
+        pickerContainer.querySelectorAll('.dur-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                config.duration = btn.dataset.value;
+                localStorage.setItem('dropzone_duration', config.duration);
+                pickerContainer.querySelectorAll('.dur-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+        });
+    }
 }
 
 function showSettings() {
@@ -183,12 +275,12 @@ function showSettings() {
 
     document.getElementById('s-owner').textContent = config.ownerName || '—';
 
-    // Mask API key: show first 8 chars then ••••
+    
     const key = config.apiKey || '';
     document.getElementById('s-key').textContent =
         key.length > 8 ? key.slice(0, 8) + '-••••-••••-••••' : key || '—';
 
-    // Strip protocol for display
+    
     const url = config.serverUrl || '';
     document.getElementById('s-url').textContent =
         url.replace(/^https?:\/\//, '') || '—';
@@ -215,8 +307,9 @@ async function loadRecentFiles() {
     if (!config.apiKey || !config.serverUrl) return;
 
     try {
-        const res = await fetch(`${config.serverUrl}/api/files`, {
-            headers: { 'X-API-KEY': config.apiKey }
+        const res = await httpRequest(`${config.serverUrl}/desktop/files`, {
+           headers: { 'X-API-KEY': config.apiKey }
+
         });
         if (!res.ok) return;
 
@@ -227,11 +320,11 @@ async function loadRecentFiles() {
 
         (files || []).slice(0, 8).forEach(f => {
             const { bg, color } = getExtStyle(f.file_name);
-            const ext = getExtLabel(f.file_name);
+            const ext  = getExtLabel(f.file_name);
             const size = formatSize(f.file_size);
             const ago  = f.uploaded_at ? timeAgo(f.uploaded_at) : '';
-            const meta = [size, ago].filter(Boolean).join(' · ');
-
+            const exp  = f.expires_at  ? 'expires ' + timeAgo(f.expires_at) : '';
+            const meta = [size, ago, exp].filter(Boolean).join(' · ');
             const item = document.createElement('div');
             item.className = 'file-item';
             item.innerHTML = `
@@ -245,7 +338,7 @@ async function loadRecentFiles() {
                 </button>`;
 
             item.querySelector('.file-dl').addEventListener('click', async () => {
-                const blob = await fetch(`${config.serverUrl}/api/files/${f.id}`, {
+                const blob = await httpRequest(`${config.serverUrl}/api/files/${f.id}`, {
                     headers: { 'X-API-KEY': config.apiKey }
                 }).then(r => r.blob());
                 const url = URL.createObjectURL(blob);
@@ -261,11 +354,14 @@ async function loadRecentFiles() {
     }
 }
 
+
 async function uploadFiles(paths) {
-    const statusText = document.getElementById('status-text');
-    const dropArea   = document.getElementById('drop-area');
-    if (statusText) statusText.innerText = "Uploading…";
-    if (dropArea) dropArea.classList.add('active');
+    const statusText  = document.getElementById('status-text');
+    const dropArea    = document.getElementById('drop-area');
+    const fs          = window.__TAURI__.fs;
+
+    if (statusText) statusText.innerText = 'Uploading…';
+    if (dropArea)   dropArea.classList.add('active');
 
     let progressBar = document.getElementById('upload-progress');
     if (!progressBar) {
@@ -277,32 +373,102 @@ async function uploadFiles(paths) {
     const fill = document.getElementById('upload-progress-fill');
     fill.style.width = '0%';
 
-    const fs = window.__TAURI__.fs;
-
     for (let i = 0; i < paths.length; i++) {
-        const path = paths[i];
+        const path     = paths[i];
         const fileName = path.split(/[\\/]/).pop();
-        try {
-            const fileBytes = await fs.readFile(path);
-            const blob = new Blob([fileBytes]);
-            const form = new FormData();
-            form.append('file', blob, fileName);
 
-            await fetch(`${config.serverUrl}/api/upload`, {
-                method: 'POST',
-                headers: { 'X-API-KEY': config.apiKey },
-                body: form
+        try {
+            const fileBytes  = await fs.readFile(path);
+            const totalSize  = fileBytes.byteLength;
+            const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
+
+            if (statusText) statusText.innerText = `Uploading ${fileName}…`;
+
+            const initRes = await httpRequest(`${config.serverUrl}/desktop/upload/init`, {
+                method:  'POST',
+                headers: { 'X-API-KEY': config.apiKey, 'Content-Type': 'application/json' },
+                body:    JSON.stringify({
+                    file_name:    fileName,
+                    file_size:    totalSize,
+                    total_chunks: totalChunks,
+                    chunk_size:   CHUNK_SIZE,
+                }),
             });
+            if (!initRes.ok) throw new Error('Init failed: ' + await initRes.text());
+            const { session_id } = await initRes.json();
+
+            for (let ci = 0; ci < totalChunks; ci++) {
+                const start  = ci * CHUNK_SIZE;
+                const end    = Math.min(start + CHUNK_SIZE, totalSize);
+                const chunk  = fileBytes.slice(start, end);
+
+                const form = new FormData();
+                form.append('session_id',  session_id);
+                form.append('chunk_index', String(ci));
+                form.append('chunk',       new Blob([chunk]), 'chunk');
+
+                const chunkRes = await httpRequest(`${config.serverUrl}/desktop/upload/chunk`, {
+                    method:  'POST',
+                    headers: { 'X-API-KEY': config.apiKey },
+                    body:    form,
+                });
+                if (!chunkRes.ok) throw new Error('Chunk upload failed at index ' + ci);
+
+                const fileProgress  = (ci + 1) / totalChunks;
+                const totalProgress = (i + fileProgress) / paths.length;
+                fill.style.width = (totalProgress * 100) + '%';
+            }
+
+            const completeRes = await httpRequest(`${config.serverUrl}/desktop/upload/complete`, {
+                method:  'POST',
+                headers: { 'X-API-KEY': config.apiKey, 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ session_id, confirmed: true }),
+            });
+            if (!completeRes.ok) throw new Error('Complete failed');
+
+            if (statusText) statusText.innerText = `Assembling ${fileName}…`;
+            await pollAssemblyStatus(session_id);
+
+            const finalRes = await httpRequest(`${config.serverUrl}/desktop/upload/finalize`, {
+                method:  'POST',
+                headers: { 'X-API-KEY': config.apiKey, 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ session_id, duration: config.duration }),
+            });
+            if (!finalRes.ok) throw new Error('Finalize failed');
+
         } catch (err) {
-            console.error("File read error:", err);
+            console.error('Upload error for', fileName, ':', err);
+            if (statusText) statusText.innerText = `Error uploading ${fileName}`;
         }
-        fill.style.width = ((i + 1) / paths.length * 100) + '%';
     }
 
-     if (statusText) statusText.innerText = "Done!";
-     if (dropArea) dropArea.classList.remove('active');
-     setTimeout(() => { if (progressBar) progressBar.remove(); }, 800);
-     if (statusText) setTimeout(() => { statusText.innerText = "or click to pick one from your computer"; }, 2000);    loadRecentFiles();
+    if (statusText) statusText.innerText = 'Done!';
+    if (dropArea)   dropArea.classList.remove('active');
+    setTimeout(() => { if (progressBar) progressBar.remove(); }, 800);
+    setTimeout(() => {
+        if (statusText) statusText.innerText = 'Drop a file, or click to pick one';
+    }, 2000);
+    loadRecentFiles();
+}
+
+async function pollAssemblyStatus(sessionID) {
+    const maxAttempts = 60; // 30s max
+    for (let i = 0; i < maxAttempts; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        try {
+            const res  = await httpRequest(`${config.serverUrl}/desktop/upload/status/${sessionID}`, {
+                headers: { 'X-API-KEY': config.apiKey },
+            });
+            const data = await res.json();
+            if (data.status === 'done') return;
+            if (data.status && data.status.startsWith('error:')) {
+                throw new Error(data.status);
+            }
+        } catch (e) {
+            throw e;
+        }
+    }
+    throw new Error('Assembly timed out');
 }
 
 if (document.readyState === 'loading') {

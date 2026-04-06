@@ -298,3 +298,33 @@ body{
     width: 0%;
     transition: width 0.25s ease;
 }
+
+
+.duration-picker {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    margin: 10px 0 4px;
+}
+
+.dur-btn {
+    padding: 4px 12px;
+    border: 1px solid #d4cdc8;
+    border-radius: 4px;
+    background: #faf8f6;
+    color: #5a504a;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.dur-btn:hover {
+    background: #f0ece6;
+    border-color: #b8b0aa;
+}
+
+.dur-btn.active {
+    background: #2c2825;
+    color: #faf8f6;
+    border-color: #2c2825;
+}
