@@ -156,6 +156,18 @@
 
     <div id="update-toast" class="update-toast hidden" role="status" aria-live="polite"></div>
 
+    <div id="app-modal" class="app-modal hidden" role="dialog" aria-modal="true" aria-labelledby="app-modal-title">
+        <div class="app-modal-backdrop"></div>
+        <div class="app-modal-card">
+            <div id="app-modal-title" class="app-modal-title">Notice</div>
+            <div id="app-modal-message" class="app-modal-message"></div>
+            <div class="app-modal-actions">
+                <button id="app-modal-cancel" class="btn app-modal-btn app-modal-btn-secondary hidden">Cancel</button>
+                <button id="app-modal-ok" class="btn app-modal-btn app-modal-btn-primary">OK</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script type="module" src="main.js"></script>
 </body>

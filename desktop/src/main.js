@@ -88,6 +88,7 @@ let onboardingScreen, mainScreen, dropArea, statusText;
 let recentFilesCache = [];
 let recentSearchQuery = '';
 let recentSearchOpen = false;
+let modalResolver = null;
 
 const EXT_COLORS = {
     pdf:  { bg: '#fde8e8', color: '#c0392b' },
@@ -285,6 +286,96 @@ function setRecentSearchOpen(open) {
     }
 }
 
+function closeModal(result) {
+    const modal = document.getElementById('app-modal');
+    if (modal) modal.classList.add('hidden');
+    if (modalResolver) {
+        const resolve = modalResolver;
+        modalResolver = null;
+        resolve(result);
+    }
+}
+
+function showModal({
+    title = 'Notice',
+    message = '',
+    okText = 'OK',
+    cancelText = null,
+}) {
+    const modal = document.getElementById('app-modal');
+    const titleEl = document.getElementById('app-modal-title');
+    const messageEl = document.getElementById('app-modal-message');
+    const okBtn = document.getElementById('app-modal-ok');
+    const cancelBtn = document.getElementById('app-modal-cancel');
+
+    if (!modal || !titleEl || !messageEl || !okBtn || !cancelBtn) {
+        return Promise.resolve(false);
+    }
+
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    okBtn.textContent = okText;
+
+    if (cancelText) {
+        cancelBtn.textContent = cancelText;
+        cancelBtn.classList.remove('hidden');
+    } else {
+        cancelBtn.classList.add('hidden');
+    }
+
+    if (modalResolver) {
+        modalResolver(false);
+        modalResolver = null;
+    }
+
+    modal.classList.remove('hidden');
+
+    return new Promise((resolve) => {
+        modalResolver = resolve;
+    });
+}
+
+function bindModalEvents() {
+    const modal = document.getElementById('app-modal');
+    const okBtn = document.getElementById('app-modal-ok');
+    const cancelBtn = document.getElementById('app-modal-cancel');
+    const backdrop = modal ? modal.querySelector('.app-modal-backdrop') : null;
+
+    if (okBtn && !okBtn.dataset.bound) {
+        okBtn.dataset.bound = '1';
+        okBtn.addEventListener('click', () => closeModal(true));
+    }
+
+    if (cancelBtn && !cancelBtn.dataset.bound) {
+        cancelBtn.dataset.bound = '1';
+        cancelBtn.addEventListener('click', () => closeModal(false));
+    }
+
+    if (backdrop && !backdrop.dataset.bound) {
+        backdrop.dataset.bound = '1';
+        backdrop.addEventListener('click', () => closeModal(false));
+    }
+
+    if (modal && !modal.dataset.bound) {
+        modal.dataset.bound = '1';
+        modal.addEventListener('click', (event) => {
+            event.stopPropagation();
+        });
+    }
+
+    if (!document.body.dataset.modalEscBound) {
+        document.body.dataset.modalEscBound = '1';
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                const modalEl = document.getElementById('app-modal');
+                if (modalEl && !modalEl.classList.contains('hidden')) {
+                    closeModal(false);
+                }
+            }
+        });
+    }
+}
+
 async function verifyKey(url, key) {
     try {
         const response = await httpRequest(`${url}/desktop/auth/verify?key=${key}`, {
@@ -307,12 +398,17 @@ async function init() {
     dropArea         = document.getElementById('drop-area');
     statusText       = document.getElementById('status-text');
 
+    bindModalEvents();
+
     document.getElementById('btn-save').addEventListener('click', async () => {
         const key = document.getElementById('api-key').value.trim();
         let url   = document.getElementById('server-url').value.trim();
 
         if (!key || !url) {
-            alert("Please fill all fields");
+            await showModal({
+                title: 'Missing information',
+                message: 'Please fill all fields before continuing.',
+            });
             return;
         }
 
@@ -327,15 +423,29 @@ async function init() {
                 config.ownerName = result.data.owner;
                 showMain();
             } else {
-                alert("Invalid API Key");
+                await showModal({
+                    title: 'Authentication failed',
+                    message: 'Invalid API key.',
+                });
             }
         } catch (e) {
             console.error(e);
-            alert("Server unreachable: " + url);
+            await showModal({
+                title: 'Server unreachable',
+                message: 'Could not reach: ' + url,
+            });
         }
     });
 
-    document.getElementById('btn-reset').addEventListener('click', () => {
+    document.getElementById('btn-reset').addEventListener('click', async () => {
+        const confirmed = await showModal({
+            title: 'Sign out',
+            message: 'Are you sure you want to sign out and reset this app on this device?',
+            okText: 'Sign out',
+            cancelText: 'Cancel',
+        });
+        if (!confirmed) return;
+
         localStorage.clear();
         window.location.reload();
     });

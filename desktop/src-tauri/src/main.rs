@@ -3,6 +3,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
+use reqwest::StatusCode;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -83,22 +84,30 @@ fn github_client() -> Result<Client> {
         .context("failed to build HTTP client")
 }
 
-fn fetch_latest_release() -> Result<GithubRelease> {
+fn fetch_latest_release() -> Result<Option<GithubRelease>> {
     let endpoint = format!(
         "https://api.github.com/repos/{}/{}/releases/latest",
         GITHUB_OWNER, GITHUB_REPO
     );
 
-    github_client()?
+    let response = github_client()?
         .get(endpoint)
         .header("Accept", GITHUB_API_ACCEPT)
         .header("User-Agent", HTTP_USER_AGENT)
         .send()
-        .context("failed to fetch latest release")?
+        .context("failed to fetch latest release")?;
+
+    if response.status() == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+
+    let release = response
         .error_for_status()
         .context("GitHub API returned an error for latest release")?
         .json::<GithubRelease>()
-        .context("failed to parse latest release JSON")
+        .context("failed to parse latest release JSON")?;
+
+    Ok(Some(release))
 }
 
 #[cfg(target_os = "linux")]
@@ -165,7 +174,17 @@ fn pick_release_asset(assets: &[GithubAsset]) -> Option<GithubAsset> {
 }
 
 fn build_update_info(current_version: String) -> Result<UpdateInfo> {
-    let release = fetch_latest_release()?;
+    let Some(release) = fetch_latest_release()? else {
+        return Ok(UpdateInfo {
+            current_version: current_version.clone(),
+            latest_version: current_version,
+            has_update: false,
+            download_url: None,
+            asset_name: None,
+            release_url: None,
+            notes: Some("No published release found yet.".to_string()),
+        });
+    };
     let latest_version = normalize_version(&release.tag_name);
     let has_update = is_remote_newer(&current_version, &latest_version);
 
@@ -404,6 +423,10 @@ fn run_cli_update() -> Result<i32> {
     let info = build_update_info(current_version)?;
 
     if !info.has_update {
+        if info.notes.as_deref() == Some("No published release found yet.") {
+            println!("No published release found yet.");
+            return Ok(0);
+        }
         println!(
             "You are up to date (current: {}, latest: {}).",
             info.current_version, info.latest_version
