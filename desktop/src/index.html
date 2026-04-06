@@ -32,7 +32,7 @@
                     </div>
                     <div>
                         <div class="info-title">Closing just hides it</div>
-                        <div class="info-desc">Pressing <strong>ESC</strong> or the close button won't quit the app — it just tucks away quietly.</div>
+                        <div class="info-desc">Closing the window won't quit the app; it tucks away quietly in your tray.</div>
                     </div>
                 </div>
                 <div class="info-row">
@@ -84,13 +84,17 @@
 
             <div id="duration-picker" class="duration-picker"></div>
 
-            <div class="hotkey-strip">
-                <span class="hotkey-text">Hide with</span>
-                <span class="kbd">ESC</span>
-            </div>
-
-            <div class="section">
-                <span class="section-label">Recently uploaded</span>
+            <div class="section recent-section">
+                <div class="recent-header">
+                    <span id="recent-label" class="section-label recent-label">Recently uploaded</span>
+                    <div class="recent-search">
+                        <input id="recent-search-input" class="recent-search-input" type="search" placeholder="Search uploads" aria-label="Search uploads" />
+                        <button id="btn-toggle-search" class="icon-btn recent-search-btn" title="Search uploads" aria-label="Search uploads">
+                            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div id="no-results" class="empty-state hidden">No results found.</div>
                 <div id="file-list" class="file-list"></div>
             </div>
         </div>
@@ -118,10 +122,29 @@
                 </div>
 
                 <div class="settings-group">
+                    <div class="settings-group-label">App</div>
+                    <div class="settings-card settings-app-card">
+                        <div class="setting-row"><span class="s-key">Current version</span><span class="s-val" id="s-app-version">-</span></div>
+                        <div class="update-actions">
+                            <button id="btn-check-update" class="btn btn-primary btn-update">Check for updates</button>
+                            <div id="s-update-status" class="update-status">Updates are checked automatically on startup and every 3 hours.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-group">
                     <div class="settings-group-label">Android app</div>
                     <div class="qr-card">
                         <div id="qrcode" class="qr-box hidden" aria-hidden="true"></div>
                         <div class="qr-desc">Android app coming soon. Pairing with your phone will be available here when it launches.</div>
+                    </div>
+                </div>
+
+                <div id="qr-debug-group" class="settings-group hidden">
+                    <div class="settings-group-label">Temporary QR Debug</div>
+                    <div class="qr-card">
+                        <div id="qrcode-debug" class="qr-box"></div>
+                        <div class="qr-desc">Temporary section for debugging QR generation.</div>
                     </div>
                 </div>
 
@@ -130,6 +153,8 @@
         </div>
 
     </div>
+
+    <div id="update-toast" class="update-toast hidden" role="status" aria-live="polite"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script type="module" src="main.js"></script>

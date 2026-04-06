@@ -50,6 +50,22 @@ async function httpRequest(url, options = {}) {
 
 let appWindow = null;
 let listen = null;
+let updateState = {
+    checking: false,
+    installing: false,
+    hasUpdate: false,
+    currentVersion: '-',
+    latestVersion: '-',
+    downloadUrl: null,
+    assetName: null,
+};
+let updateTimer = null;
+let toastTimer = null;
+let qrDebugTimer = null;
+const pressedKeys = new Set();
+
+const UPDATE_INTERVAL_MS = 3 * 60 * 60 * 1000;
+const LAST_NOTIFIED_VERSION_KEY = 'dropzone_last_notified_update';
 
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
 
@@ -72,6 +88,9 @@ let config = {};
 loadConfig();
 
 let onboardingScreen, mainScreen, dropArea, statusText;
+let recentFilesCache = [];
+let recentSearchQuery = '';
+let recentSearchOpen = false;
 
 const EXT_COLORS = {
     pdf:  { bg: '#fde8e8', color: '#c0392b' },
@@ -128,6 +147,145 @@ function timeAgo(dateStr) {
     if (diff < 3600) return Math.floor(diff / 60) + ' min ago';
     if (diff < 86400) return Math.floor(diff / 3600) + ' hr ago';
     return Math.floor(diff / 86400) + 'd ago';
+}
+
+function renderPairingQRCodes() {
+    const targets = [
+        document.getElementById('qrcode'),
+        document.getElementById('qrcode-debug'),
+    ];
+
+    const payload = JSON.stringify({
+        protocol: "dropzone-v1",
+        server_url: config.serverUrl,
+        api_key: config.apiKey,
+        owner: config.ownerName,
+    });
+
+    targets.forEach((target) => {
+        if (!target) return;
+        target.innerHTML = '';
+        if (window.QRCode) {
+            new QRCode(target, {
+                text: payload,
+                width: 128,
+                height: 128,
+                colorDark: "#2c2825",
+                colorLight: "#ffffff",
+            });
+        }
+    });
+}
+
+function showDebugQrTemporarily() {
+    const debugGroup = document.getElementById('qr-debug-group');
+    if (!debugGroup) return;
+
+    renderPairingQRCodes();
+    debugGroup.classList.remove('hidden');
+
+    if (qrDebugTimer) {
+        clearTimeout(qrDebugTimer);
+    }
+
+    qrDebugTimer = setTimeout(() => {
+        debugGroup.classList.add('hidden');
+    }, 5000);
+}
+
+function getSearchSvg() {
+    return '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>';
+}
+
+function getCloseSvg() {
+    return '<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+}
+
+function renderRecentFiles() {
+    const list = document.getElementById('file-list');
+    const empty = document.getElementById('no-results');
+    if (!list || !empty) return;
+
+    const query = recentSearchQuery.trim().toLowerCase();
+    const files = recentFilesCache.filter(f => {
+        if (!query) return true;
+        return (f.file_name || '').toLowerCase().includes(query);
+    }).slice(0, 8);
+
+    list.innerHTML = '';
+
+    if (files.length === 0) {
+        empty.classList.remove('hidden');
+        return;
+    }
+
+    empty.classList.add('hidden');
+
+    files.forEach(f => {
+        const { bg, color } = getExtStyle(f.file_name);
+        const ext  = getExtLabel(f.file_name);
+        const size = formatSize(f.file_size);
+        const ago  = f.uploaded_at ? timeAgo(f.uploaded_at) : '';
+        const exp  = f.expires_at  ? 'expires ' + timeAgo(f.expires_at) : '';
+        const meta = [size, ago, exp].filter(Boolean).join(' · ');
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        item.innerHTML = `
+            <div class="file-ext" style="background:${bg};color:${color};">${ext}</div>
+            <div class="file-info">
+                <div class="file-name">${f.file_name}</div>
+                <div class="file-meta">${meta}</div>
+            </div>
+            <button class="file-dl" title="Download">
+                <svg viewBox="0 0 24 24"><path d="M12 3v11M12 14l-4-4M12 14l4-4M4 20h16"/></svg>
+            </button>`;
+
+        item.querySelector('.file-dl').addEventListener('click', async () => {
+            const blob = await httpRequest(`${config.serverUrl}/api/files/${f.id}`, {
+                headers: { 'X-API-KEY': config.apiKey }
+            }).then(r => r.blob());
+            const url = URL.createObjectURL(blob);
+            const a   = document.createElement('a');
+            a.href = url; a.download = f.file_name; a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        list.appendChild(item);
+    });
+}
+
+function setRecentSearchOpen(open) {
+    recentSearchOpen = open;
+
+    const label = document.getElementById('recent-label');
+    const wrap = document.querySelector('.recent-search');
+    const input = document.getElementById('recent-search-input');
+    const button = document.getElementById('btn-toggle-search');
+
+    if (label) label.classList.toggle('hidden', open);
+    if (wrap) wrap.classList.toggle('is-open', open);
+    if (input) {
+        input.classList.toggle('visible', open);
+        input.setAttribute('aria-hidden', open ? 'false' : 'true');
+    }
+    if (button) {
+        button.innerHTML = open ? getCloseSvg() : getSearchSvg();
+        button.title = open ? 'Close search' : 'Search uploads';
+        button.setAttribute('aria-label', open ? 'Close search' : 'Search uploads');
+    }
+
+    if (open && input) {
+        requestAnimationFrame(() => {
+            input.focus();
+            input.select();
+        });
+    }
+
+    if (!open) {
+        recentSearchQuery = '';
+        if (input) input.value = '';
+        renderRecentFiles();
+    }
 }
 
 async function verifyKey(url, key) {
@@ -193,6 +351,7 @@ async function init() {
             appWindow = tauri.window.getCurrentWindow();
             listen    = tauri.event.listen;
             setupTauriListeners();
+            setupUpdater();
         } catch (err) {
             console.error("Error setting up Tauri hooks:", err);
         }
@@ -205,6 +364,182 @@ async function init() {
     } else {
         showOnboarding();
     }
+}
+
+function tauriInvoke(command, payload = {}) {
+    const tauri = getTauriApi();
+    if (!tauri || !tauri.core || typeof tauri.core.invoke !== 'function') {
+        throw new Error('Tauri invoke API unavailable');
+    }
+    return tauri.core.invoke(command, payload);
+}
+
+function showToast(message) {
+    const toast = document.getElementById('update-toast');
+    if (!toast) return;
+
+    toast.textContent = message;
+    toast.classList.remove('hidden');
+    requestAnimationFrame(() => {
+        toast.classList.add('visible');
+    });
+
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+        toast.classList.remove('visible');
+        setTimeout(() => toast.classList.add('hidden'), 300);
+    }, 3800);
+}
+
+async function sendDesktopNotification(title, body) {
+    if (typeof Notification === 'undefined') return;
+
+    try {
+        if (Notification.permission === 'granted') {
+            new Notification(title, { body });
+            return;
+        }
+
+        if (Notification.permission !== 'denied') {
+            const permission = await Notification.requestPermission();
+            if (permission === 'granted') {
+                new Notification(title, { body });
+            }
+        }
+    } catch (err) {
+        console.warn('Desktop notification failed:', err);
+    }
+}
+
+function renderUpdaterUi() {
+    const appVersion = document.getElementById('s-app-version');
+    const status = document.getElementById('s-update-status');
+    const btn = document.getElementById('btn-check-update');
+    if (!appVersion || !status || !btn) return;
+
+    appVersion.textContent = updateState.currentVersion || '-';
+
+    if (updateState.checking) {
+        status.textContent = 'Checking for updates...';
+        btn.textContent = 'Checking...';
+        btn.disabled = true;
+        btn.classList.remove('install');
+        return;
+    }
+
+    if (updateState.installing) {
+        status.textContent = 'Downloading update and preparing installer...';
+        btn.textContent = 'Installing...';
+        btn.disabled = true;
+        btn.classList.add('install');
+        return;
+    }
+
+    if (updateState.hasUpdate) {
+        status.textContent = `Update available: v${updateState.latestVersion}`;
+        btn.textContent = 'Download and install';
+        btn.disabled = false;
+        btn.classList.add('install');
+        return;
+    }
+
+    status.textContent = 'You are on the latest version.';
+    btn.textContent = 'Check for updates';
+    btn.disabled = false;
+    btn.classList.remove('install');
+}
+
+async function checkForUpdates(options = {}) {
+    const manual = !!options.manual;
+
+    updateState.checking = true;
+    renderUpdaterUi();
+
+    try {
+        const info = await tauriInvoke('check_for_updates');
+
+        updateState.currentVersion = info.current_version || updateState.currentVersion;
+        updateState.latestVersion = info.latest_version || updateState.latestVersion;
+        updateState.hasUpdate = !!info.has_update;
+        updateState.downloadUrl = info.download_url || null;
+        updateState.assetName = info.asset_name || null;
+
+        if (updateState.hasUpdate) {
+            const lastNotified = localStorage.getItem(LAST_NOTIFIED_VERSION_KEY);
+            if (lastNotified !== updateState.latestVersion) {
+                localStorage.setItem(LAST_NOTIFIED_VERSION_KEY, updateState.latestVersion);
+                sendDesktopNotification(
+                    'Dropzone update available',
+                    `New update available (v${updateState.latestVersion}). Open settings to install.`
+                );
+                showToast('New update available! Go to Settings to install.');
+            } else if (manual) {
+                showToast(`Update available: v${updateState.latestVersion}`);
+            }
+        } else if (manual) {
+            showToast('You are already on the latest version.');
+        }
+    } catch (err) {
+        console.error('Update check failed:', err);
+        if (manual) showToast('Update check failed. Please try again.');
+    } finally {
+        updateState.checking = false;
+        renderUpdaterUi();
+    }
+}
+
+async function downloadAndInstallUpdate() {
+    if (!updateState.hasUpdate || !updateState.downloadUrl || !updateState.assetName) {
+        showToast('No downloadable update was found for this platform.');
+        return;
+    }
+
+    updateState.installing = true;
+    renderUpdaterUi();
+
+    try {
+        showToast('Preparing update installer...');
+        await tauriInvoke('download_and_install_update', {
+            download_url: updateState.downloadUrl,
+            asset_name: updateState.assetName,
+        });
+    } catch (err) {
+        console.error('Install update failed:', err);
+        const msg = String(err || 'Update install failed');
+        showToast(msg.includes('dropzone --update')
+            ? 'GUI elevation failed. Run: dropzone --update'
+            : 'Update install failed. Please try again.');
+        updateState.installing = false;
+        renderUpdaterUi();
+    }
+}
+
+async function setupUpdater() {
+    try {
+        updateState.currentVersion = await tauriInvoke('app_version');
+    } catch (err) {
+        console.warn('Unable to read app version via backend:', err);
+    }
+
+    const btn = document.getElementById('btn-check-update');
+    if (btn && !btn.dataset.bound) {
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', () => {
+            if (updateState.hasUpdate) {
+                downloadAndInstallUpdate();
+            } else {
+                checkForUpdates({ manual: true });
+            }
+        });
+    }
+
+    renderUpdaterUi();
+    checkForUpdates({ manual: false });
+
+    if (updateTimer) clearInterval(updateTimer);
+    updateTimer = setInterval(() => {
+        checkForUpdates({ manual: false });
+    }, UPDATE_INTERVAL_MS);
 }
 
 function showOnboarding() {
@@ -222,26 +557,30 @@ function showMain() {
     loadConfig();
 
     
-    const qrDiv = document.getElementById('qrcode');
-    if (qrDiv) {
-        qrDiv.innerHTML = '';
-        if (window.QRCode) {
-            new QRCode(qrDiv, {
-                text: JSON.stringify({
-                    protocol:   "dropzone-v1",
-                    server_url: config.serverUrl,
-                    api_key:    config.apiKey,
-                    owner:      config.ownerName
-                }),
-                width:      128,
-                height:     128,
-                colorDark:  "#2c2825",
-                colorLight: "#ffffff"
-            });
-        }
-    }
+    renderPairingQRCodes();
 
     loadRecentFiles();
+
+    const searchButton = document.getElementById('btn-toggle-search');
+    const searchInput = document.getElementById('recent-search-input');
+    if (searchButton && !searchButton.dataset.bound) {
+        searchButton.dataset.bound = '1';
+        searchButton.addEventListener('click', () => {
+            setRecentSearchOpen(!recentSearchOpen);
+        });
+    }
+    if (searchInput && !searchInput.dataset.bound) {
+        searchInput.dataset.bound = '1';
+        searchInput.addEventListener('input', () => {
+            recentSearchQuery = searchInput.value;
+            renderRecentFiles();
+        });
+        searchInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                setRecentSearchOpen(false);
+            }
+        });
+    }
 
     const ownerLabel = document.getElementById('owner-label');
     if (ownerLabel) ownerLabel.textContent = config.ownerName ? config.ownerName + "'s Dropzone" : 'Dropzone';
@@ -284,13 +623,32 @@ function showSettings() {
     const url = config.serverUrl || '';
     document.getElementById('s-url').textContent =
         url.replace(/^https?:\/\//, '') || '—';
+
+    renderUpdaterUi();
 }
 
 async function setupTauriListeners() {
     window.addEventListener('keydown', async (e) => {
+        pressedKeys.add((e.key || '').toLowerCase());
+
+        const hasAlt = e.altKey || pressedKeys.has('alt');
+        const hasQ = pressedKeys.has('q');
+        const hasR = pressedKeys.has('r');
+        if (hasAlt && hasQ && hasR) {
+            showDebugQrTemporarily();
+        }
+
         if (e.key === 'Escape' && appWindow) {
             await appWindow.hide();
         }
+    });
+
+    window.addEventListener('keyup', (e) => {
+        pressedKeys.delete((e.key || '').toLowerCase());
+    });
+
+    window.addEventListener('blur', () => {
+        pressedKeys.clear();
     });
 
     if (listen) {
@@ -314,41 +672,8 @@ async function loadRecentFiles() {
         if (!res.ok) return;
 
         const text  = await res.text();
-        const files = text ? JSON.parse(text) : [];
-        const list  = document.getElementById('file-list');
-        list.innerHTML = '';
-
-        (files || []).slice(0, 8).forEach(f => {
-            const { bg, color } = getExtStyle(f.file_name);
-            const ext  = getExtLabel(f.file_name);
-            const size = formatSize(f.file_size);
-            const ago  = f.uploaded_at ? timeAgo(f.uploaded_at) : '';
-            const exp  = f.expires_at  ? 'expires ' + timeAgo(f.expires_at) : '';
-            const meta = [size, ago, exp].filter(Boolean).join(' · ');
-            const item = document.createElement('div');
-            item.className = 'file-item';
-            item.innerHTML = `
-                <div class="file-ext" style="background:${bg};color:${color};">${ext}</div>
-                <div class="file-info">
-                    <div class="file-name">${f.file_name}</div>
-                    <div class="file-meta">${meta}</div>
-                </div>
-                <button class="file-dl" title="Download">
-                    <svg viewBox="0 0 24 24"><path d="M12 3v11M12 14l-4-4M12 14l4-4M4 20h16"/></svg>
-                </button>`;
-
-            item.querySelector('.file-dl').addEventListener('click', async () => {
-                const blob = await httpRequest(`${config.serverUrl}/api/files/${f.id}`, {
-                    headers: { 'X-API-KEY': config.apiKey }
-                }).then(r => r.blob());
-                const url = URL.createObjectURL(blob);
-                const a   = document.createElement('a');
-                a.href = url; a.download = f.file_name; a.click();
-                URL.revokeObjectURL(url);
-            });
-
-            list.appendChild(item);
-        });
+        recentFilesCache = text ? JSON.parse(text) : [];
+        renderRecentFiles();
     } catch (e) {
         console.error("Failed to load files:", e);
     }
