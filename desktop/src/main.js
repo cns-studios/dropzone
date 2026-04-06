@@ -6,11 +6,9 @@ const getTauriApi = () => {
     }
 };
 
-// Generic HTTP wrapper that uses Tauri HTTP client (no CORS) when available
 async function httpRequest(url, options = {}) {
     const tauri = getTauriApi();
     
-    // Try Tauri HTTP client first (bypasses CORS completely)
     if (tauri && tauri.http) {
         try {
             const headers = options.headers || {};
@@ -22,7 +20,6 @@ async function httpRequest(url, options = {}) {
                 body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
             });
             
-            // Convert Tauri response to Fetch-like response object
             return {
                 ok: response.status >= 200 && response.status < 300,
                 status: response.status,
@@ -342,6 +339,17 @@ async function init() {
         localStorage.clear();
         window.location.reload();
     });
+
+    const toast = document.getElementById('update-toast');
+    if (toast && !toast.dataset.bound) {
+        toast.dataset.bound = '1';
+        toast.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toast.classList.remove('visible');
+            setTimeout(() => toast.classList.add('hidden'), 300);
+        });
+    }
 
     const tauri = getTauriApi();
 

@@ -417,7 +417,7 @@ body{
     opacity:0;
     transition:transform 0.28s ease, opacity 0.28s ease;
     z-index:30;
-    pointer-events:none;
+    pointer-events:auto;
 }
 
 .update-toast.visible{
