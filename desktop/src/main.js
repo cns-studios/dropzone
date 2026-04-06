@@ -168,8 +168,8 @@ function renderPairingQRCodes() {
         if (window.QRCode) {
             new QRCode(target, {
                 text: payload,
-                width: 128,
-                height: 128,
+                width: 196,
+                height: 196,
                 colorDark: "#2c2825",
                 colorLight: "#ffffff",
             });
