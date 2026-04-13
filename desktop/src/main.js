@@ -1,13 +1,13 @@
 import { getTauriApi, httpRequest } from './lib/http.js';
 import {
     approveEnrollment,
+    createEnrollment,
     downloadDesktopFile,
     listPendingEnrollments,
     listRecentUploads,
     listDesktopFiles,
-    lookupFileByCode,
+    registerDevice,
     rejectEnrollment,
-    reportFile,
     uploadChunk,
     uploadComplete,
     uploadFinalize,
@@ -35,6 +35,9 @@ let desktopSocket = null;
 let desktopSocketRetryTimer = null;
 let enrollmentSocket = null;
 let enrollmentSocketRetryTimer = null;
+let approvalPollTimer = null;
+let approvalWaitState = null;
+let enrollmentPopupOpen = false;
 const pressedKeys = new Set();
 
 const UPDATE_INTERVAL_MS = 3 * 60 * 60 * 1000;
@@ -212,24 +215,9 @@ function renderRecentFiles() {
                 <div class="file-name">${f.file_name}</div>
                 <div class="file-meta">${meta}</div>
             </div>
-            <button class="file-report" title="Report">
-                <svg viewBox="0 0 24 24"><path d="M5 4v16"/><path d="M5 5h11l-2 4 2 4H5"/></svg>
-            </button>
             <button class="file-dl" title="Download">
                 <svg viewBox="0 0 24 24"><path d="M12 3v11M12 14l-4-4M12 14l4-4M4 20h16"/></svg>
             </button>`;
-
-        item.querySelector('.file-report').addEventListener('click', async () => {
-            try {
-                const res = await reportFile(config, f.id);
-                const payload = await res.json().catch(() => ({}));
-                if (!res.ok) throw new Error(payload.error || 'Failed to report file');
-                showToast(payload.message || 'File reported. Thank you.');
-            } catch (err) {
-                console.error('Report failed:', err);
-                showToast(err.message || 'Failed to report file');
-            }
-        });
 
         item.querySelector('.file-dl').addEventListener('click', async () => {
             const blob = await downloadDesktopFile(config, f.id).then((r) => r.blob());
@@ -261,6 +249,287 @@ function setEnrollmentResult(message, isError = false) {
     result.textContent = message;
     result.classList.remove('hidden');
     result.style.color = isError ? '#b84f4f' : '';
+}
+
+function setPopupEnrollmentResult(message, isError = false) {
+    const result = document.getElementById('popup-enroll-result');
+    if (!result) return;
+    result.textContent = message;
+    result.classList.remove('hidden');
+    result.style.color = isError ? '#b84f4f' : '';
+}
+
+function defaultWrapMetaValue() {
+    return '{"version":1}';
+}
+
+function getDeviceRegistrationPayload(deviceID) {
+    return {
+        device_id: deviceID,
+        device_label: 'Dropzone Desktop',
+        public_key_jwk: { kty: 'OKP', crv: 'X25519', x: 'pending' },
+        key_algorithm: 'x25519',
+        key_version: 1,
+    };
+}
+
+async function registerOAuthDevice(deviceID) {
+    const res = await registerDevice(config, getDeviceRegistrationPayload(deviceID));
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(payload.error || payload.code || 'Device registration failed');
+    }
+    return payload;
+}
+
+async function ensureEnrollmentForDevice(deviceID) {
+    const pendingRes = await listPendingEnrollments(config);
+    const pendingPayload = await pendingRes.json().catch(() => ({}));
+    if (!pendingRes.ok) {
+        throw new Error(pendingPayload.error || 'Failed to inspect pending enrollments');
+    }
+
+    const existing = Array.isArray(pendingPayload?.items)
+        ? pendingPayload.items.find((item) => (item?.enrollment?.request_device_id || '') === deviceID)
+        : null;
+
+    if (existing?.enrollment) {
+        return {
+            enrollment_id: existing.enrollment.id,
+            verification_code: existing.enrollment.verification_code,
+            expires_at: existing.enrollment.expires_at,
+        };
+    }
+
+    const createRes = await createEnrollment(config, { request_device_id: deviceID });
+    const createPayload = await createRes.json().catch(() => ({}));
+    if (!createRes.ok) {
+        throw new Error(createPayload.error || 'Failed to create approval request');
+    }
+    return createPayload;
+}
+
+function setApprovalWaitStatus(message, isError = false) {
+    const el = document.getElementById('approval-status');
+    if (!el) return;
+    el.textContent = message;
+    el.style.color = isError ? '#b84f4f' : '';
+}
+
+function stopApprovalPolling() {
+    if (approvalPollTimer) {
+        clearInterval(approvalPollTimer);
+        approvalPollTimer = null;
+    }
+}
+
+function showApprovalWaitScreen(waitState) {
+    approvalWaitState = waitState;
+    onboardingScreen?.classList.add('hidden');
+    mainScreen?.classList.add('hidden');
+    document.getElementById('settings')?.classList.add('hidden');
+
+    const screen = document.getElementById('approval-wait');
+    const codeEl = document.getElementById('approval-code');
+    const deviceEl = document.getElementById('approval-device-id');
+    if (codeEl) codeEl.textContent = waitState.verificationCode || 'pending';
+    if (deviceEl) deviceEl.textContent = waitState.deviceID;
+    setApprovalWaitStatus('Waiting for approval from another trusted device...');
+    screen?.classList.remove('hidden');
+}
+
+function hideApprovalWaitScreen() {
+    approvalWaitState = null;
+    document.getElementById('approval-wait')?.classList.add('hidden');
+}
+
+async function checkOAuthApprovalStatus() {
+    if (!approvalWaitState || !config.accessToken) return false;
+
+    try {
+        const registration = await registerOAuthDevice(approvalWaitState.deviceID);
+        if (!registration?.needs_enrollment) {
+            stopApprovalPolling();
+            hideApprovalWaitScreen();
+            showToast('Device approved. Uploads are now enabled.');
+            showMain();
+            return true;
+        }
+
+        setApprovalWaitStatus('Still pending approval...');
+        return false;
+    } catch (err) {
+        setApprovalWaitStatus(err?.message || 'Approval check failed', true);
+        return false;
+    }
+}
+
+function startApprovalPolling() {
+    stopApprovalPolling();
+    approvalPollTimer = setInterval(() => {
+        checkOAuthApprovalStatus();
+    }, 4000);
+}
+
+async function ensureOAuthDeviceReady() {
+    const deviceID = getOrCreateApproverDeviceId();
+    const registration = await registerOAuthDevice(deviceID);
+
+    if (!registration?.needs_enrollment) {
+        stopApprovalPolling();
+        hideApprovalWaitScreen();
+        return true;
+    }
+
+    const enrollment = await ensureEnrollmentForDevice(deviceID);
+    showApprovalWaitScreen({
+        deviceID,
+        enrollmentID: enrollment.enrollment_id,
+        verificationCode: enrollment.verification_code,
+    });
+    startApprovalPolling();
+    return false;
+}
+
+function readEnrollmentApprovalInputs(prefix) {
+    const approverInput = document.getElementById(`${prefix}-approver-device-id`);
+    const wrappedUkInput = document.getElementById(`${prefix}-wrapped-uk`);
+    const wrapAlgInput = document.getElementById(`${prefix}-uk-wrap-alg`);
+    const wrapMetaInput = document.getElementById(`${prefix}-uk-wrap-meta`);
+
+    const approverDeviceID = (approverInput?.value || '').trim();
+    const wrappedUserKeyB64 = (wrappedUkInput?.value || '').trim();
+    const ukWrapAlg = (wrapAlgInput?.value || '').trim();
+    const ukWrapMetaRaw = (wrapMetaInput?.value || '').trim();
+
+    if (!approverDeviceID) return { error: 'Approver device ID is required.' };
+    if (!wrappedUserKeyB64) return { error: 'Wrapped user key is required.' };
+    if (!ukWrapAlg) return { error: 'Wrap algorithm is required.' };
+
+    let ukWrapMeta = {};
+    if (ukWrapMetaRaw) {
+        try {
+            ukWrapMeta = JSON.parse(ukWrapMetaRaw);
+        } catch (_) {
+            return { error: 'Wrap metadata must be valid JSON.' };
+        }
+    }
+
+    return {
+        approverDeviceID,
+        wrappedUserKeyB64,
+        ukWrapAlg,
+        ukWrapMeta,
+    };
+}
+
+function renderEnrollmentPopup() {
+    const popup = document.getElementById('enrollment-popup');
+    const list = document.getElementById('popup-enroll-pending-list');
+    if (!popup || !list) return;
+
+    const currentDevice = getOrCreateApproverDeviceId();
+    const popupItems = pendingEnrollmentsCache.filter((item) => {
+        const deviceID = item?.enrollment?.request_device_id || '';
+        return deviceID && deviceID !== currentDevice;
+    });
+
+    if (!popupItems.length || !config.accessToken) {
+        popup.classList.add('hidden');
+        enrollmentPopupOpen = false;
+        return;
+    }
+
+    list.innerHTML = '';
+
+    popupItems.forEach((item) => {
+        const enrollment = item?.enrollment || {};
+        const requestDevice = item?.request_device || {};
+        const deviceName = requestDevice.device_label || requestDevice.id || enrollment.request_device_id || 'Unknown device';
+        const verificationCode = enrollment.verification_code || 'n/a';
+        const expiresAt = enrollment.expires_at ? timeAgo(enrollment.expires_at) : 'n/a';
+        const enrollmentId = enrollment.id || '';
+
+        const row = document.createElement('div');
+        row.className = 'enroll-item';
+        row.innerHTML = `
+            <div class="enroll-item-top">
+                <div class="enroll-item-title">${deviceName}</div>
+                <div>
+                    <button class="enroll-action enroll-action-approve" title="Approve enrollment request">Approve</button>
+                    <button class="enroll-action enroll-action-reject" title="Reject enrollment request">Reject</button>
+                </div>
+            </div>
+            <div class="enroll-item-meta">Code: ${verificationCode}</div>
+            <div class="enroll-item-meta">Enrollment ID: ${enrollmentId || 'n/a'}</div>
+            <div class="enroll-item-meta">Expires: ${expiresAt}</div>
+        `;
+
+        row.querySelector('.enroll-action-approve')?.addEventListener('click', async () => {
+            if (!enrollmentId) {
+                setPopupEnrollmentResult('Enrollment ID is missing.', true);
+                return;
+            }
+            const input = readEnrollmentApprovalInputs('popup-enroll');
+            if (input.error) {
+                setPopupEnrollmentResult(input.error, true);
+                return;
+            }
+
+            try {
+                const res = await approveEnrollment(config, enrollmentId, {
+                    approver_device_id: input.approverDeviceID,
+                    verification_code: verificationCode,
+                    wrapped_user_key_b64: input.wrappedUserKeyB64,
+                    uk_wrap_alg: input.ukWrapAlg,
+                    uk_wrap_meta: input.ukWrapMeta,
+                });
+                const payload = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setPopupEnrollmentResult(payload.error || 'Failed to approve enrollment.', true);
+                    return;
+                }
+                setPopupEnrollmentResult('Enrollment approved.');
+                await refreshPendingEnrollments();
+            } catch (err) {
+                console.error('Approve enrollment failed:', err);
+                setPopupEnrollmentResult('Failed to approve enrollment.', true);
+            }
+        });
+
+        row.querySelector('.enroll-action-reject')?.addEventListener('click', async () => {
+            if (!enrollmentId) {
+                setPopupEnrollmentResult('Enrollment ID is missing.', true);
+                return;
+            }
+            const input = readEnrollmentApprovalInputs('popup-enroll');
+            if (input.error) {
+                setPopupEnrollmentResult(input.error, true);
+                return;
+            }
+
+            try {
+                const res = await rejectEnrollment(config, enrollmentId, {
+                    approver_device_id: input.approverDeviceID,
+                });
+                const payload = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setPopupEnrollmentResult(payload.error || 'Failed to reject enrollment.', true);
+                    return;
+                }
+                setPopupEnrollmentResult('Enrollment rejected.');
+                await refreshPendingEnrollments();
+            } catch (err) {
+                console.error('Reject enrollment failed:', err);
+                setPopupEnrollmentResult('Failed to reject enrollment.', true);
+            }
+        });
+
+        list.appendChild(row);
+    });
+
+    popup.classList.remove('hidden');
+    enrollmentPopupOpen = true;
 }
 
 function renderPendingEnrollments() {
@@ -406,6 +675,7 @@ async function refreshPendingEnrollments() {
         }
         pendingEnrollmentsCache = Array.isArray(payload?.items) ? payload.items : [];
         renderPendingEnrollments();
+        renderEnrollmentPopup();
         setEnrollmentResult(`${pendingEnrollmentsCache.length} pending enrollment(s) loaded.`);
     } catch (err) {
         console.error('Pending enrollments load failed:', err);
@@ -560,67 +830,26 @@ async function init() {
     bindModalEvents();
 
     const oauthBtn = document.getElementById('btn-oauth');
-    const toolCodeInput = document.getElementById('tool-code-input');
-    const toolCodeLookup = document.getElementById('tool-code-lookup');
-    const toolReportInput = document.getElementById('tool-report-input');
-    const toolReportSubmit = document.getElementById('tool-report-submit');
-    const toolResult = document.getElementById('tool-result');
+    const approvalRefreshBtn = document.getElementById('btn-approval-refresh');
+    const approvalSignoutBtn = document.getElementById('btn-approval-signout');
+    const popupCloseBtn = document.getElementById('popup-enroll-close');
+    const popupRefreshBtn = document.getElementById('popup-enroll-refresh');
 
-    const setToolResult = (message, isError = false) => {
-        if (!toolResult) return;
-        toolResult.textContent = message;
-        toolResult.classList.remove('hidden');
-        toolResult.style.color = isError ? '#b84f4f' : '';
-    };
-
-    toolCodeInput?.addEventListener('input', () => {
-        toolCodeInput.value = toolCodeInput.value.replace(/\D/g, '').slice(0, 12);
+    approvalRefreshBtn?.addEventListener('click', () => checkOAuthApprovalStatus());
+    approvalSignoutBtn?.addEventListener('click', () => {
+        stopApprovalPolling();
+        disconnectDesktopSocket();
+        disconnectEnrollmentSocket();
+        localStorage.clear();
+        window.location.reload();
     });
 
-    toolCodeLookup?.addEventListener('click', async () => {
-        const code = (toolCodeInput?.value || '').trim();
-        if (!/^\d{12}$/.test(code)) {
-            setToolResult('Lookup code must be a 12-digit numeric value.', true);
-            return;
-        }
-        try {
-            const res = await lookupFileByCode(config, code);
-            const payload = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                setToolResult(payload.error || 'Lookup failed.', true);
-                return;
-            }
-            const name = payload.original_name || payload.file_name || 'Unknown file';
-            const size = payload.size_bytes ? formatSize(payload.size_bytes) : '';
-            setToolResult(`Found: ${name}${size ? ` (${size})` : ''}`);
-            if (toolReportInput && payload.id) {
-                toolReportInput.value = payload.id;
-            }
-        } catch (err) {
-            console.error('Code lookup failed:', err);
-            setToolResult('Code lookup failed.', true);
-        }
+    popupCloseBtn?.addEventListener('click', () => {
+        document.getElementById('enrollment-popup')?.classList.add('hidden');
+        enrollmentPopupOpen = false;
     });
 
-    toolReportSubmit?.addEventListener('click', async () => {
-        const fileId = (toolReportInput?.value || '').trim();
-        if (!fileId) {
-            setToolResult('Enter a file ID to report.', true);
-            return;
-        }
-        try {
-            const res = await reportFile(config, fileId);
-            const payload = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                setToolResult(payload.error || 'Report failed.', true);
-                return;
-            }
-            setToolResult(payload.message || 'File reported. Thank you.');
-        } catch (err) {
-            console.error('Report failed:', err);
-            setToolResult('Report failed.', true);
-        }
-    });
+    popupRefreshBtn?.addEventListener('click', refreshPendingEnrollments);
 
     document.getElementById('btn-save').addEventListener('click', async () => {
         const key = document.getElementById('api-key').value.trim();
@@ -687,7 +916,10 @@ async function init() {
             config.serverUrl = url;
             config.ownerName = verifyPayload.owner || 'Authenticated User';
 
-            showMain();
+            const ready = await ensureOAuthDeviceReady();
+            if (ready) {
+                showMain();
+            }
         } catch (error) {
             console.error('OAuth login failed:', error);
             await showModal({
@@ -709,6 +941,7 @@ async function init() {
         });
         if (!confirmed) return;
 
+        stopApprovalPolling();
         disconnectDesktopSocket();
         disconnectEnrollmentSocket();
         localStorage.clear();
@@ -742,7 +975,21 @@ async function init() {
         console.warn("Tauri context NOT detected. Running in standard browser mode.");
     }
 
-    if ((config.apiKey || config.accessToken) && config.serverUrl) {
+    if (config.accessToken && config.serverUrl) {
+        try {
+            const ready = await ensureOAuthDeviceReady();
+            if (ready) {
+                showMain();
+            }
+        } catch (err) {
+            console.error('OAuth device readiness failed:', err);
+            await showModal({
+                title: 'OAuth setup failed',
+                message: err?.message || 'Could not initialize trusted device state for OAuth login.',
+            });
+            showOnboarding();
+        }
+    } else if (config.apiKey && config.serverUrl) {
         showMain();
     } else {
         showOnboarding();
@@ -927,6 +1174,9 @@ async function setupUpdater() {
 
 function showOnboarding() {
     if (!onboardingScreen) return;
+    hideApprovalWaitScreen();
+    document.getElementById('enrollment-popup')?.classList.add('hidden');
+    enrollmentPopupOpen = false;
     onboardingScreen.classList.remove('hidden');
     mainScreen.classList.add('hidden');
     document.getElementById('settings').classList.add('hidden');
@@ -934,6 +1184,7 @@ function showOnboarding() {
 
 function showMain() {
     if (!mainScreen) return;
+    hideApprovalWaitScreen();
     onboardingScreen.classList.add('hidden');
     document.getElementById('settings').classList.add('hidden');
     mainScreen.classList.remove('hidden');
@@ -945,6 +1196,9 @@ function showMain() {
     connectEnrollmentSocket();
 
     loadRecentFiles();
+    if (config.accessToken) {
+        refreshPendingEnrollments();
+    }
 
     const searchButton = document.getElementById('btn-toggle-search');
     const searchInput = document.getElementById('recent-search-input');
@@ -1182,7 +1436,22 @@ function showSettings() {
 
     const wrapMetaInput = document.getElementById('enroll-uk-wrap-meta');
     if (wrapMetaInput && !wrapMetaInput.value.trim()) {
-        wrapMetaInput.value = '{"version":1}';
+        wrapMetaInput.value = defaultWrapMetaValue();
+    }
+
+    const popupApproverInput = document.getElementById('popup-enroll-approver-device-id');
+    if (popupApproverInput && !popupApproverInput.value.trim()) {
+        popupApproverInput.value = getOrCreateApproverDeviceId();
+    }
+
+    const popupWrapAlgInput = document.getElementById('popup-enroll-uk-wrap-alg');
+    if (popupWrapAlgInput && !popupWrapAlgInput.value.trim()) {
+        popupWrapAlgInput.value = 'x25519-xsalsa20-poly1305';
+    }
+
+    const popupWrapMetaInput = document.getElementById('popup-enroll-uk-wrap-meta');
+    if (popupWrapMetaInput && !popupWrapMetaInput.value.trim()) {
+        popupWrapMetaInput.value = defaultWrapMetaValue();
     }
 
     const refreshEnrollmentsButton = document.getElementById('enroll-refresh');
@@ -1329,7 +1598,11 @@ async function uploadFiles(paths) {
             if (statusText) statusText.innerText = `Assembling ${fileName}…`;
             await pollAssemblyStatus(session_id);
 
-            const finalRes = await uploadFinalize(config, { session_id, duration: config.duration });
+            const finalizePayload = { session_id, duration: config.duration };
+            if (config.accessToken) {
+                finalizePayload.device_id = getOrCreateApproverDeviceId();
+            }
+            const finalRes = await uploadFinalize(config, finalizePayload);
             if (!finalRes.ok) throw new Error('Finalize failed');
 
         } catch (err) {

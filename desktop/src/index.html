@@ -61,6 +61,32 @@
             <p class="hint">Open anytime with <strong>Ctrl + Shift + D</strong></p>
         </div>
 
+        <div id="approval-wait" class="screen hidden">
+            <div class="approval-wrap">
+                <div class="approval-badge">OAuth Device Approval Required</div>
+                <div class="approval-title">Waiting for trusted device approval</div>
+                <div class="approval-sub">Approve this device from another trusted Dropzone session before uploading files.</div>
+
+                <div class="approval-card">
+                    <div class="approval-row">
+                        <span>Verification code</span>
+                        <strong id="approval-code">-</strong>
+                    </div>
+                    <div class="approval-row">
+                        <span>This device ID</span>
+                        <strong id="approval-device-id">-</strong>
+                    </div>
+                    <div class="approval-row">
+                        <span>Status</span>
+                        <strong id="approval-status">Waiting for approval...</strong>
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" id="btn-approval-refresh">Check approval now</button>
+                <button class="btn btn-muted" id="btn-approval-signout">Sign out</button>
+            </div>
+        </div>
+
         <div id="main-drop" class="screen hidden">
             <div class="titlebar">
                 <div class="titlebar-inner">
@@ -150,27 +176,6 @@
                 </div>
 
                 <div class="settings-group">
-                    <div class="settings-group-label">Share Tools</div>
-                    <div class="settings-card tools-card">
-                        <div class="tool-row">
-                            <span class="s-key">Lookup code</span>
-                            <input id="tool-code-input" class="tool-input" type="text" inputmode="numeric" maxlength="12" placeholder="12-digit code" />
-                            <button id="tool-code-lookup" class="icon-btn tool-btn" title="Lookup code" aria-label="Lookup code">
-                                <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-                            </button>
-                        </div>
-                        <div class="tool-row">
-                            <span class="s-key">Report file</span>
-                            <input id="tool-report-input" class="tool-input" type="text" placeholder="File ID" />
-                            <button id="tool-report-submit" class="icon-btn tool-btn" title="Report file" aria-label="Report file">
-                                <svg viewBox="0 0 24 24"><path d="M5 4v16"/><path d="M5 5h11l-2 4 2 4H5"/></svg>
-                            </button>
-                        </div>
-                        <div id="tool-result" class="tool-result hidden"></div>
-                    </div>
-                </div>
-
-                <div class="settings-group">
                     <div class="settings-group-label">Device Enrollments</div>
                     <div class="settings-card tools-card">
                         <div class="tool-row">
@@ -204,6 +209,41 @@
     </div>
 
     <div id="update-toast" class="update-toast hidden" role="status" aria-live="polite"></div>
+
+    <div id="enrollment-popup" class="app-modal hidden" role="dialog" aria-modal="true" aria-labelledby="enrollment-popup-title">
+        <div class="app-modal-backdrop"></div>
+        <div class="app-modal-card enrollment-popup-card">
+            <div id="enrollment-popup-title" class="app-modal-title">Pending Device Approvals</div>
+            <div class="app-modal-message">Another device requested trust approval. Approve or reject it here.</div>
+
+            <div class="tools-card">
+                <div class="tool-row">
+                    <span class="s-key">Approver device ID</span>
+                    <input id="popup-enroll-approver-device-id" class="tool-input" type="text" placeholder="Your trusted device ID" />
+                </div>
+                <div class="tool-row">
+                    <span class="s-key">Wrapped user key</span>
+                    <input id="popup-enroll-wrapped-uk" class="tool-input" type="text" placeholder="Base64 wrapped_user_key_b64" />
+                </div>
+                <div class="tool-row">
+                    <span class="s-key">Wrap algorithm</span>
+                    <input id="popup-enroll-uk-wrap-alg" class="tool-input" type="text" placeholder="x25519-xsalsa20-poly1305" />
+                </div>
+                <div class="tool-row">
+                    <span class="s-key">Wrap metadata (JSON)</span>
+                    <input id="popup-enroll-uk-wrap-meta" class="tool-input" type="text" placeholder='{"version":1}' />
+                </div>
+                <div id="popup-enroll-result" class="tool-result hidden"></div>
+            </div>
+
+            <div id="popup-enroll-pending-list" class="enroll-list"></div>
+
+            <div class="app-modal-actions">
+                <button id="popup-enroll-refresh" class="btn app-modal-btn app-modal-btn-secondary">Refresh</button>
+                <button id="popup-enroll-close" class="btn app-modal-btn app-modal-btn-primary">Close</button>
+            </div>
+        </div>
+    </div>
 
     <div id="app-modal" class="app-modal hidden" role="dialog" aria-modal="true" aria-labelledby="app-modal-title">
         <div class="app-modal-backdrop"></div>
