@@ -84,6 +84,7 @@ function isRecoverableOAuthBootstrapError(err) {
     || message.includes('mismatch')
         || message.includes('missing bearer token')
         || message.includes('invalid bearer token')
+        || message.includes('invalid_bearer_token')
         || message.includes('auth required')
     || message.includes('missing_auth')
     || message.includes('approver device is not trusted')
@@ -99,6 +100,19 @@ function isConnectivityOAuthError(err) {
         || message.includes('failed to fetch')
         || message.includes('networkerror')
         || message.includes('cors');
+}
+
+function resetOAuthToOnboarding(message) {
+    stopApprovalPolling();
+    disconnectDesktopSocket();
+    disconnectEnrollmentSocket();
+    clearStoredOAuthState();
+    loadConfig();
+    hideApprovalWaitScreen();
+    showOnboarding();
+    if (message) {
+        showToast(message);
+    }
 }
 
 let onboardingScreen, mainScreen, dropArea, statusText;
@@ -271,11 +285,31 @@ function renderRecentFiles() {
 function getOrCreateApproverDeviceId() {
     const existing = localStorage.getItem('dropzone_device_id');
     if (existing && existing.trim()) {
-        return existing.trim();
+        const trimmed = existing.trim();
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)) {
+            return trimmed;
+        }
     }
 
-    const randomPart = Math.random().toString(16).slice(2, 10);
-    const generated = `dz-${randomPart}`;
+    const generated = (() => {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+
+        const bytes = new Uint8Array(16);
+        if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+            crypto.getRandomValues(bytes);
+        } else {
+            for (let index = 0; index < bytes.length; index += 1) {
+                bytes[index] = Math.floor(Math.random() * 256);
+            }
+        }
+
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    })();
     localStorage.setItem('dropzone_device_id', generated);
     return generated;
 }
@@ -405,6 +439,10 @@ async function checkOAuthApprovalStatus() {
         setApprovalWaitStatus('Still pending approval...');
         return false;
     } catch (err) {
+        if (isRecoverableOAuthBootstrapError(err)) {
+            resetOAuthToOnboarding('OAuth session expired or is invalid. Please sign in again.');
+            return false;
+        }
         setApprovalWaitStatus(err?.message || 'Approval check failed', true);
         return false;
     }
@@ -423,6 +461,13 @@ async function ensureOAuthDeviceReady() {
     try {
         registration = await registerOAuthDevice(deviceID);
     } catch (err) {
+        if (isRecoverableOAuthBootstrapError(err)) {
+            clearStoredOAuthState();
+            loadConfig();
+            hideApprovalWaitScreen();
+            showOnboarding();
+            return false;
+        }
         showApprovalWaitScreen({
             deviceID,
             enrollmentID: '',
@@ -443,6 +488,13 @@ async function ensureOAuthDeviceReady() {
     try {
         enrollment = await ensureEnrollmentForDevice(deviceID);
     } catch (err) {
+        if (isRecoverableOAuthBootstrapError(err)) {
+            clearStoredOAuthState();
+            loadConfig();
+            hideApprovalWaitScreen();
+            showOnboarding();
+            return false;
+        }
         showApprovalWaitScreen({
             deviceID,
             enrollmentID: '',
