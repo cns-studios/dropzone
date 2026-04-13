@@ -314,6 +314,44 @@ function getOrCreateApproverDeviceId() {
     return generated;
 }
 
+async function getOrCreateDeviceIdentity() {
+    const storageKey = 'dropzone_device_identity_v1';
+    const cached = localStorage.getItem(storageKey);
+    if (cached) {
+        try {
+            const parsed = JSON.parse(cached);
+            if (parsed?.deviceId && parsed?.publicKeyJWK && parsed?.privateKeyJWK) {
+                return parsed;
+            }
+        } catch (_) {
+        }
+    }
+
+    const keyPair = await crypto.subtle.generateKey(
+        {
+            name: 'RSA-OAEP',
+            modulusLength: 2048,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: 'SHA-256',
+        },
+        true,
+        ['encrypt', 'decrypt']
+    );
+
+    const publicKeyJWK = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
+    const privateKeyJWK = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
+    const identity = {
+        deviceId: getOrCreateApproverDeviceId(),
+        keyAlgorithm: 'RSA-OAEP-2048',
+        keyVersion: 1,
+        publicKeyJWK,
+        privateKeyJWK,
+    };
+
+    localStorage.setItem(storageKey, JSON.stringify(identity));
+    return identity;
+}
+
 function setEnrollmentResult(message, isError = false) {
     const result = document.getElementById('enroll-result');
     if (!result) return;
@@ -334,24 +372,26 @@ function defaultWrapMetaValue() {
     return '{"version":1}';
 }
 
-function getDeviceRegistrationPayload(deviceID) {
+async function getDeviceRegistrationPayload(deviceID) {
+    const identity = await getOrCreateDeviceIdentity();
     return {
         device_id: deviceID,
         device_label: 'Dropzone Desktop',
-        public_key_jwk: { kty: 'OKP', crv: 'X25519', x: 'pending' },
-        key_algorithm: 'x25519',
-        key_version: 1,
+        public_key_jwk: identity.publicKeyJWK,
+        key_algorithm: identity.keyAlgorithm,
+        key_version: identity.keyVersion,
     };
 }
 
 async function registerOAuthDevice(deviceID) {
+    const payload = await getDeviceRegistrationPayload(deviceID);
     return tauriInvoke('desktop_device_api', {
         request: {
             server_url: config.serverUrl,
             access_token: config.accessToken,
             method: 'POST',
             path: '/desktop/me/devices/register',
-            body: getDeviceRegistrationPayload(deviceID),
+            body: payload,
         },
     });
 }
