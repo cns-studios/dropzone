@@ -13,6 +13,8 @@
     "fs:allow-read-file",
     "fs:allow-write-file",
     "fs:allow-exists",
-    "opener:default"
+    "opener:default",
+    "shell:default",
+    "shell:allow-open"
   ]
 }

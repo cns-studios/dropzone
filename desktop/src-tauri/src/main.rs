@@ -2,15 +2,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use anyhow::{anyhow, Context, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -23,6 +30,45 @@ const GITHUB_OWNER: &str = "cns-studios";
 const GITHUB_REPO: &str = "dropzone";
 const GITHUB_API_ACCEPT: &str = "application/vnd.github+json";
 const HTTP_USER_AGENT: &str = "Dropzone-Updater/1.0";
+const OAUTH_LOOPBACK_REDIRECT: &str = "http://127.0.0.1:43873/callback";
+const OAUTH_CALLBACK_TIMEOUT_SECS: u64 = 240;
+
+#[derive(Debug, Deserialize)]
+struct DesktopOAuthConfig {
+    auth_url: String,
+    client_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthTokenExchangeResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct OAuthStartResponse {
+    session_id: String,
+    auth_url: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct OAuthPollResponse {
+    status: String,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthSessionState {
+    status: String,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    error: Option<String>,
+}
+
+static OAUTH_SESSIONS: LazyLock<Mutex<HashMap<String, OAuthSessionState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Deserialize)]
 struct GithubAsset {
@@ -82,6 +128,213 @@ fn github_client() -> Result<Client> {
         .timeout(Duration::from_secs(30))
         .build()
         .context("failed to build HTTP client")
+}
+
+fn random_token(len: usize) -> String {
+    thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(verifier.as_bytes());
+    let digest = hasher.finalize();
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn update_oauth_session(session_id: &str, next: OAuthSessionState) {
+    if let Ok(mut sessions) = OAUTH_SESSIONS.lock() {
+        sessions.insert(session_id.to_string(), next);
+    }
+}
+
+fn fetch_desktop_oauth_config(server_url: &str) -> Result<DesktopOAuthConfig> {
+    let url = format!(
+        "{}/desktop/auth/oauth/config",
+        server_url.trim_end_matches('/')
+    );
+    let config = github_client()?
+        .get(url)
+        .header("Accept", "application/json")
+        .header("User-Agent", HTTP_USER_AGENT)
+        .send()
+        .context("failed to fetch desktop OAuth config")?
+        .error_for_status()
+        .context("desktop OAuth config endpoint returned error")?
+        .json::<DesktopOAuthConfig>()
+        .context("failed to parse desktop OAuth config JSON")?;
+    Ok(config)
+}
+
+fn exchange_auth_code(
+    auth_base_url: &str,
+    code: &str,
+    code_verifier: &str,
+    client_id: &str,
+    state: &str,
+) -> Result<OAuthTokenExchangeResponse> {
+    let token_url = format!("{}/v2/token", auth_base_url.trim_end_matches('/'));
+    let payload = serde_json::json!({
+        "code": code,
+        "code_verifier": code_verifier,
+        "client_id": client_id,
+        "redirect_uri": OAUTH_LOOPBACK_REDIRECT,
+        "state": state,
+    });
+
+    let token = github_client()?
+        .post(token_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("User-Agent", HTTP_USER_AGENT)
+        .body(payload.to_string())
+        .send()
+        .context("failed to exchange auth code")?
+        .error_for_status()
+        .context("auth code exchange returned error")?
+        .json::<OAuthTokenExchangeResponse>()
+        .context("failed to parse token exchange response")?;
+
+    Ok(token)
+}
+
+fn parse_callback_query(request_data: &str) -> Option<HashMap<String, String>> {
+    let line = request_data.lines().next()?;
+    let mut parts = line.split_whitespace();
+    let method = parts.next()?;
+    if method != "GET" {
+        return None;
+    }
+
+    let target = parts.next()?;
+    let query = target.split('?').nth(1)?;
+    let query = query.split('#').next().unwrap_or(query);
+    let mut result = HashMap::new();
+    for pair in query.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        let k = kv.next().unwrap_or("");
+        let v = kv.next().unwrap_or("");
+        if k.is_empty() {
+            continue;
+        }
+        let decoded = urlencoding::decode(v).ok()?.to_string();
+        result.insert(k.to_string(), decoded);
+    }
+    Some(result)
+}
+
+fn serve_loopback_response(stream: &mut std::net::TcpStream, ok: bool, message: &str) {
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Dropzone OAuth</title></head><body><h3>{}</h3><p>{}</p><p>You can close this window and return to Dropzone.</p></body></html>",
+        if ok { "Login completed" } else { "Login failed" },
+        message
+    );
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn run_loopback_session(session_id: String, auth_base_url: String, client_id: String, state: String, verifier: String) {
+    let listener = match TcpListener::bind("127.0.0.1:43873") {
+        Ok(v) => v,
+        Err(err) => {
+            update_oauth_session(
+                &session_id,
+                OAuthSessionState {
+                    status: "failed".to_string(),
+                    access_token: None,
+                    refresh_token: None,
+                    error: Some(format!("failed to bind oauth callback port: {}", err)),
+                },
+            );
+            return;
+        }
+    };
+
+    let _ = listener.set_nonblocking(false);
+    let _ = listener.set_ttl(1);
+
+    for incoming in listener.incoming() {
+        let mut stream = match incoming {
+            Ok(s) => s,
+            Err(err) => {
+                update_oauth_session(
+                    &session_id,
+                    OAuthSessionState {
+                        status: "failed".to_string(),
+                        access_token: None,
+                        refresh_token: None,
+                        error: Some(format!("oauth callback listener failed: {}", err)),
+                    },
+                );
+                return;
+            }
+        };
+
+        let mut buffer = [0u8; 8192];
+        let read_count = stream.read(&mut buffer).unwrap_or(0);
+        if read_count == 0 {
+            serve_loopback_response(&mut stream, false, "No callback payload received.");
+            continue;
+        }
+
+        let request_text = String::from_utf8_lossy(&buffer[..read_count]).to_string();
+        let Some(query) = parse_callback_query(&request_text) else {
+            serve_loopback_response(&mut stream, false, "Callback query is invalid.");
+            continue;
+        };
+
+        let code = query.get("code").cloned().unwrap_or_default();
+        let returned_state = query.get("state").cloned().unwrap_or_default();
+        if code.is_empty() || returned_state != state {
+            serve_loopback_response(&mut stream, false, "State validation failed or code missing.");
+            update_oauth_session(
+                &session_id,
+                OAuthSessionState {
+                    status: "failed".to_string(),
+                    access_token: None,
+                    refresh_token: None,
+                    error: Some("oauth callback validation failed".to_string()),
+                },
+            );
+            return;
+        }
+
+        match exchange_auth_code(&auth_base_url, &code, &verifier, &client_id, &state) {
+            Ok(token) => {
+                serve_loopback_response(&mut stream, true, "Dropzone is finalizing your session.");
+                update_oauth_session(
+                    &session_id,
+                    OAuthSessionState {
+                        status: "completed".to_string(),
+                        access_token: Some(token.access_token),
+                        refresh_token: token.refresh_token,
+                        error: None,
+                    },
+                );
+                return;
+            }
+            Err(err) => {
+                serve_loopback_response(&mut stream, false, "Token exchange failed.");
+                update_oauth_session(
+                    &session_id,
+                    OAuthSessionState {
+                        status: "failed".to_string(),
+                        access_token: None,
+                        refresh_token: None,
+                        error: Some(format!("oauth token exchange failed: {}", err)),
+                    },
+                );
+                return;
+            }
+        }
+    }
 }
 
 fn fetch_latest_release() -> Result<Option<GithubRelease>> {
@@ -520,6 +773,92 @@ async fn download_and_install_update(
     Ok(())
 }
 
+#[tauri::command]
+async fn start_oauth_loopback(server_url: String) -> Result<OAuthStartResponse, String> {
+    let trimmed = server_url.trim().trim_end_matches('/').to_string();
+    if trimmed.is_empty() {
+        return Err("server URL is required".to_string());
+    }
+
+    let oauth_config = tauri::async_runtime::spawn_blocking({
+        let value = trimmed.clone();
+        move || fetch_desktop_oauth_config(&value)
+    })
+    .await
+    .map_err(|e| format!("failed to join oauth config task: {}", e))?
+    .map_err(|e| e.to_string())?;
+
+    let session_id = random_token(32);
+    let state = random_token(40);
+    let verifier = random_token(96);
+    let challenge = pkce_challenge(&verifier);
+
+    let auth_url = format!(
+        "{}/login?response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=openid%20profile&state={}",
+        oauth_config.auth_url.trim_end_matches('/'),
+        urlencoding::encode(&oauth_config.client_id),
+        urlencoding::encode(OAUTH_LOOPBACK_REDIRECT),
+        urlencoding::encode(&challenge),
+        urlencoding::encode(&state),
+    );
+
+    update_oauth_session(
+        &session_id,
+        OAuthSessionState {
+            status: "pending".to_string(),
+            access_token: None,
+            refresh_token: None,
+            error: None,
+        },
+    );
+
+    std::thread::spawn({
+        let sid = session_id.clone();
+        let auth_base = oauth_config.auth_url;
+        let client_id = oauth_config.client_id;
+        let state_value = state;
+        move || run_loopback_session(sid, auth_base, client_id, state_value, verifier)
+    });
+
+    let sid_for_timeout = session_id.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(OAUTH_CALLBACK_TIMEOUT_SECS));
+        if let Ok(mut sessions) = OAUTH_SESSIONS.lock() {
+            if let Some(current) = sessions.get_mut(&sid_for_timeout) {
+                if current.status == "pending" {
+                    current.status = "failed".to_string();
+                    current.error = Some("oauth callback timed out".to_string());
+                }
+            }
+        }
+    });
+
+    Ok(OAuthStartResponse { session_id, auth_url })
+}
+
+#[tauri::command]
+fn poll_oauth_loopback(session_id: String) -> Result<OAuthPollResponse, String> {
+    let sessions = OAUTH_SESSIONS
+        .lock()
+        .map_err(|_| "failed to lock oauth sessions".to_string())?;
+
+    let Some(state) = sessions.get(&session_id) else {
+        return Ok(OAuthPollResponse {
+            status: "failed".to_string(),
+            access_token: None,
+            refresh_token: None,
+            error: Some("oauth session not found".to_string()),
+        });
+    };
+
+    Ok(OAuthPollResponse {
+        status: state.status.clone(),
+        access_token: state.access_token.clone(),
+        refresh_token: state.refresh_token.clone(),
+        error: state.error.clone(),
+    })
+}
+
 fn main() {
     if std::env::args().any(|arg| arg == "--update") {
         let exit_code = match run_cli_update() {
@@ -597,7 +936,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             app_version,
             check_for_updates,
-            download_and_install_update
+            download_and_install_update,
+            start_oauth_loopback,
+            poll_oauth_loopback
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

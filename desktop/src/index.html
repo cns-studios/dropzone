@@ -57,6 +57,7 @@
                 </div>
             </div>
             <button class="btn btn-primary" id="btn-save">Get started →</button>
+            <button class="btn btn-muted" id="btn-oauth">Sign in with CNS account</button>
             <p class="hint">Open anytime with <strong>Ctrl + Shift + D</strong></p>
         </div>
 
@@ -145,6 +146,54 @@
                     <div class="qr-card">
                         <div id="qrcode-debug" class="qr-box"></div>
                         <div class="qr-desc">Temporary section for debugging QR generation.</div>
+                    </div>
+                </div>
+
+                <div class="settings-group">
+                    <div class="settings-group-label">Share Tools</div>
+                    <div class="settings-card tools-card">
+                        <div class="tool-row">
+                            <span class="s-key">Lookup code</span>
+                            <input id="tool-code-input" class="tool-input" type="text" inputmode="numeric" maxlength="12" placeholder="12-digit code" />
+                            <button id="tool-code-lookup" class="icon-btn tool-btn" title="Lookup code" aria-label="Lookup code">
+                                <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                            </button>
+                        </div>
+                        <div class="tool-row">
+                            <span class="s-key">Report file</span>
+                            <input id="tool-report-input" class="tool-input" type="text" placeholder="File ID" />
+                            <button id="tool-report-submit" class="icon-btn tool-btn" title="Report file" aria-label="Report file">
+                                <svg viewBox="0 0 24 24"><path d="M5 4v16"/><path d="M5 5h11l-2 4 2 4H5"/></svg>
+                            </button>
+                        </div>
+                        <div id="tool-result" class="tool-result hidden"></div>
+                    </div>
+                </div>
+
+                <div class="settings-group">
+                    <div class="settings-group-label">Device Enrollments</div>
+                    <div class="settings-card tools-card">
+                        <div class="tool-row">
+                            <span class="s-key">Approver device ID</span>
+                            <input id="enroll-approver-device-id" class="tool-input" type="text" placeholder="Your trusted device ID" />
+                        </div>
+                        <div class="tool-row">
+                            <span class="s-key">Wrapped user key</span>
+                            <input id="enroll-wrapped-uk" class="tool-input" type="text" placeholder="Base64 wrapped_user_key_b64" />
+                        </div>
+                        <div class="tool-row">
+                            <span class="s-key">Wrap algorithm</span>
+                            <input id="enroll-uk-wrap-alg" class="tool-input" type="text" placeholder="x25519-xsalsa20-poly1305" />
+                        </div>
+                        <div class="tool-row">
+                            <span class="s-key">Wrap metadata (JSON)</span>
+                            <input id="enroll-uk-wrap-meta" class="tool-input" type="text" placeholder='{"version":1}' />
+                        </div>
+                        <div class="tool-row">
+                            <button id="enroll-refresh" class="btn btn-muted enroll-btn">Refresh pending enrollments</button>
+                        </div>
+                        <div id="enroll-result" class="tool-result hidden"></div>
+                        <div id="enroll-pending-list" class="enroll-list"></div>
                     </div>
                 </div>
 

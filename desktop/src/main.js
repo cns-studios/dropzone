@@ -1,49 +1,21 @@
-const getTauriApi = () => {
-    try {
-        return window.__TAURI__;
-    } catch (e) {
-        return null;
-    }
-};
-
-async function httpRequest(url, options = {}) {
-    const tauri = getTauriApi();
-    
-    if (tauri && tauri.http) {
-        try {
-            const headers = options.headers || {};
-            const body = options.body;
-            
-            const response = await tauri.http.fetch(url, {
-                method: options.method || 'GET',
-                headers,
-                body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
-            });
-            
-            return {
-                ok: response.status >= 200 && response.status < 300,
-                status: response.status,
-                async json() {
-                    return JSON.parse(response.data);
-                },
-                async text() {
-                    return response.data;
-                },
-                async blob() {
-                    const encoder = new TextEncoder();
-                    return new Blob([encoder.encode(response.data)]);
-                },
-                data: response.data,
-                headers: response.headers || {},
-            };
-        } catch (e) {
-            console.log("Tauri HTTP failed, trying fetch:", e);
-        }
-    }
-    
-    // Fallback to standard fetch
-    return fetch(url, options);
-}
+import { getTauriApi, httpRequest } from './lib/http.js';
+import {
+    approveEnrollment,
+    downloadDesktopFile,
+    listPendingEnrollments,
+    listRecentUploads,
+    listDesktopFiles,
+    lookupFileByCode,
+    rejectEnrollment,
+    reportFile,
+    uploadChunk,
+    uploadComplete,
+    uploadFinalize,
+    uploadInit,
+    uploadStatus,
+    verifyDesktopKey,
+} from './lib/desktopApi.js';
+import { beginLoopbackOAuth, verifyLoopbackToken, waitForLoopbackOAuth } from './lib/oauth.js';
 
 let appWindow = null;
 let listen = null;
@@ -59,6 +31,10 @@ let updateState = {
 let updateTimer = null;
 let toastTimer = null;
 let qrDebugTimer = null;
+let desktopSocket = null;
+let desktopSocketRetryTimer = null;
+let enrollmentSocket = null;
+let enrollmentSocketRetryTimer = null;
 const pressedKeys = new Set();
 
 const UPDATE_INTERVAL_MS = 3 * 60 * 60 * 1000;
@@ -76,6 +52,7 @@ const DURATIONS = [
 function loadConfig() {
     config = {
         apiKey: localStorage.getItem('dropzone_key'),
+        accessToken: localStorage.getItem('dropzone_access_token'),
         serverUrl: localStorage.getItem('dropzone_url'),
         ownerName: localStorage.getItem('dropzone_owner'),
         duration: localStorage.getItem('dropzone_duration') || '7d',
@@ -89,6 +66,7 @@ let recentFilesCache = [];
 let recentSearchQuery = '';
 let recentSearchOpen = false;
 let modalResolver = null;
+let pendingEnrollmentsCache = [];
 
 const EXT_COLORS = {
     pdf:  { bg: '#fde8e8', color: '#c0392b' },
@@ -234,14 +212,27 @@ function renderRecentFiles() {
                 <div class="file-name">${f.file_name}</div>
                 <div class="file-meta">${meta}</div>
             </div>
+            <button class="file-report" title="Report">
+                <svg viewBox="0 0 24 24"><path d="M5 4v16"/><path d="M5 5h11l-2 4 2 4H5"/></svg>
+            </button>
             <button class="file-dl" title="Download">
                 <svg viewBox="0 0 24 24"><path d="M12 3v11M12 14l-4-4M12 14l4-4M4 20h16"/></svg>
             </button>`;
 
+        item.querySelector('.file-report').addEventListener('click', async () => {
+            try {
+                const res = await reportFile(config, f.id);
+                const payload = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(payload.error || 'Failed to report file');
+                showToast(payload.message || 'File reported. Thank you.');
+            } catch (err) {
+                console.error('Report failed:', err);
+                showToast(err.message || 'Failed to report file');
+            }
+        });
+
         item.querySelector('.file-dl').addEventListener('click', async () => {
-            const blob = await httpRequest(`${config.serverUrl}/api/files/${f.id}`, {
-                headers: { 'X-API-KEY': config.apiKey }
-            }).then(r => r.blob());
+            const blob = await downloadDesktopFile(config, f.id).then((r) => r.blob());
             const url = URL.createObjectURL(blob);
             const a   = document.createElement('a');
             a.href = url; a.download = f.file_name; a.click();
@@ -250,6 +241,176 @@ function renderRecentFiles() {
 
         list.appendChild(item);
     });
+}
+
+function getOrCreateApproverDeviceId() {
+    const existing = localStorage.getItem('dropzone_device_id');
+    if (existing && existing.trim()) {
+        return existing.trim();
+    }
+
+    const randomPart = Math.random().toString(16).slice(2, 10);
+    const generated = `dz-${randomPart}`;
+    localStorage.setItem('dropzone_device_id', generated);
+    return generated;
+}
+
+function setEnrollmentResult(message, isError = false) {
+    const result = document.getElementById('enroll-result');
+    if (!result) return;
+    result.textContent = message;
+    result.classList.remove('hidden');
+    result.style.color = isError ? '#b84f4f' : '';
+}
+
+function renderPendingEnrollments() {
+    const list = document.getElementById('enroll-pending-list');
+    if (!list) return;
+
+    if (!pendingEnrollmentsCache.length) {
+        list.innerHTML = '<div class="enroll-item-meta">No pending device enrollments.</div>';
+        return;
+    }
+
+    list.innerHTML = '';
+
+    pendingEnrollmentsCache.forEach((item) => {
+        const enrollment = item?.enrollment || {};
+        const requestDevice = item?.request_device || {};
+        const deviceName = requestDevice.device_label || requestDevice.id || enrollment.request_device_id || 'Unknown device';
+        const verificationCode = enrollment.verification_code || 'n/a';
+        const expiresAt = enrollment.expires_at ? timeAgo(enrollment.expires_at) : 'n/a';
+        const enrollmentId = enrollment.id || '';
+
+        const row = document.createElement('div');
+        row.className = 'enroll-item';
+        row.innerHTML = `
+            <div class="enroll-item-top">
+                <div class="enroll-item-title">${deviceName}</div>
+                <div>
+                    <button class="enroll-action enroll-action-approve" title="Approve enrollment request">Approve</button>
+                    <button class="enroll-action enroll-action-reject" title="Reject enrollment request">Reject</button>
+                </div>
+            </div>
+            <div class="enroll-item-meta">Code: ${verificationCode}</div>
+            <div class="enroll-item-meta">Enrollment ID: ${enrollmentId || 'n/a'}</div>
+            <div class="enroll-item-meta">Expires: ${expiresAt}</div>
+        `;
+
+        row.querySelector('.enroll-action-approve')?.addEventListener('click', async () => {
+            const approverInput = document.getElementById('enroll-approver-device-id');
+            const wrappedUkInput = document.getElementById('enroll-wrapped-uk');
+            const wrapAlgInput = document.getElementById('enroll-uk-wrap-alg');
+            const wrapMetaInput = document.getElementById('enroll-uk-wrap-meta');
+
+            const approverDeviceID = (approverInput?.value || '').trim();
+            const wrappedUserKeyB64 = (wrappedUkInput?.value || '').trim();
+            const ukWrapAlg = (wrapAlgInput?.value || '').trim();
+            const ukWrapMetaRaw = (wrapMetaInput?.value || '').trim();
+
+            if (!approverDeviceID) {
+                setEnrollmentResult('Approver device ID is required to approve a request.', true);
+                return;
+            }
+            if (!wrappedUserKeyB64) {
+                setEnrollmentResult('Wrapped user key is required to approve a request.', true);
+                return;
+            }
+            if (!ukWrapAlg) {
+                setEnrollmentResult('Wrap algorithm is required to approve a request.', true);
+                return;
+            }
+
+            let ukWrapMeta = {};
+            if (ukWrapMetaRaw) {
+                try {
+                    ukWrapMeta = JSON.parse(ukWrapMetaRaw);
+                } catch (_) {
+                    setEnrollmentResult('Wrap metadata must be valid JSON.', true);
+                    return;
+                }
+            }
+            if (!enrollmentId) {
+                setEnrollmentResult('Enrollment ID is missing for this request.', true);
+                return;
+            }
+
+            try {
+                const res = await approveEnrollment(config, enrollmentId, {
+                    approver_device_id: approverDeviceID,
+                    verification_code: verificationCode,
+                    wrapped_user_key_b64: wrappedUserKeyB64,
+                    uk_wrap_alg: ukWrapAlg,
+                    uk_wrap_meta: ukWrapMeta,
+                });
+                const payload = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setEnrollmentResult(payload.error || 'Failed to approve enrollment.', true);
+                    return;
+                }
+                setEnrollmentResult('Enrollment approved.');
+                await refreshPendingEnrollments();
+            } catch (err) {
+                console.error('Approve enrollment failed:', err);
+                setEnrollmentResult('Failed to approve enrollment.', true);
+            }
+        });
+
+        row.querySelector('.enroll-action-reject')?.addEventListener('click', async () => {
+            const approverInput = document.getElementById('enroll-approver-device-id');
+            const approverDeviceID = (approverInput?.value || '').trim();
+            if (!approverDeviceID) {
+                setEnrollmentResult('Approver device ID is required to reject a request.', true);
+                return;
+            }
+            if (!enrollmentId) {
+                setEnrollmentResult('Enrollment ID is missing for this request.', true);
+                return;
+            }
+
+            try {
+                const res = await rejectEnrollment(config, enrollmentId, {
+                    approver_device_id: approverDeviceID,
+                });
+                const payload = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setEnrollmentResult(payload.error || 'Failed to reject enrollment.', true);
+                    return;
+                }
+                setEnrollmentResult('Enrollment rejected.');
+                await refreshPendingEnrollments();
+            } catch (err) {
+                console.error('Reject enrollment failed:', err);
+                setEnrollmentResult('Failed to reject enrollment.', true);
+            }
+        });
+
+        list.appendChild(row);
+    });
+}
+
+async function refreshPendingEnrollments() {
+    if (!config.accessToken) {
+        pendingEnrollmentsCache = [];
+        renderPendingEnrollments();
+        setEnrollmentResult('Sign in with OAuth to manage device enrollments.', true);
+        return;
+    }
+
+    try {
+        const res = await listPendingEnrollments(config);
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            setEnrollmentResult(payload.error || 'Failed to load pending enrollments.', true);
+            return;
+        }
+        pendingEnrollmentsCache = Array.isArray(payload?.items) ? payload.items : [];
+        renderPendingEnrollments();
+        setEnrollmentResult(`${pendingEnrollmentsCache.length} pending enrollment(s) loaded.`);
+    } catch (err) {
+        console.error('Pending enrollments load failed:', err);
+        setEnrollmentResult('Failed to load pending enrollments.', true);
+    }
 }
 
 function setRecentSearchOpen(open) {
@@ -378,9 +539,7 @@ function bindModalEvents() {
 
 async function verifyKey(url, key) {
     try {
-        const response = await httpRequest(`${url}/desktop/auth/verify?key=${key}`, {
-            method: 'GET'
-        });
+        const response = await verifyDesktopKey(url, key);
         if (response.ok) {
             const data = await response.json();
             return { ok: true, data };
@@ -400,6 +559,69 @@ async function init() {
 
     bindModalEvents();
 
+    const oauthBtn = document.getElementById('btn-oauth');
+    const toolCodeInput = document.getElementById('tool-code-input');
+    const toolCodeLookup = document.getElementById('tool-code-lookup');
+    const toolReportInput = document.getElementById('tool-report-input');
+    const toolReportSubmit = document.getElementById('tool-report-submit');
+    const toolResult = document.getElementById('tool-result');
+
+    const setToolResult = (message, isError = false) => {
+        if (!toolResult) return;
+        toolResult.textContent = message;
+        toolResult.classList.remove('hidden');
+        toolResult.style.color = isError ? '#b84f4f' : '';
+    };
+
+    toolCodeInput?.addEventListener('input', () => {
+        toolCodeInput.value = toolCodeInput.value.replace(/\D/g, '').slice(0, 12);
+    });
+
+    toolCodeLookup?.addEventListener('click', async () => {
+        const code = (toolCodeInput?.value || '').trim();
+        if (!/^\d{12}$/.test(code)) {
+            setToolResult('Lookup code must be a 12-digit numeric value.', true);
+            return;
+        }
+        try {
+            const res = await lookupFileByCode(config, code);
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setToolResult(payload.error || 'Lookup failed.', true);
+                return;
+            }
+            const name = payload.original_name || payload.file_name || 'Unknown file';
+            const size = payload.size_bytes ? formatSize(payload.size_bytes) : '';
+            setToolResult(`Found: ${name}${size ? ` (${size})` : ''}`);
+            if (toolReportInput && payload.id) {
+                toolReportInput.value = payload.id;
+            }
+        } catch (err) {
+            console.error('Code lookup failed:', err);
+            setToolResult('Code lookup failed.', true);
+        }
+    });
+
+    toolReportSubmit?.addEventListener('click', async () => {
+        const fileId = (toolReportInput?.value || '').trim();
+        if (!fileId) {
+            setToolResult('Enter a file ID to report.', true);
+            return;
+        }
+        try {
+            const res = await reportFile(config, fileId);
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setToolResult(payload.error || 'Report failed.', true);
+                return;
+            }
+            setToolResult(payload.message || 'File reported. Thank you.');
+        } catch (err) {
+            console.error('Report failed:', err);
+            setToolResult('Report failed.', true);
+        }
+    });
+
     document.getElementById('btn-save').addEventListener('click', async () => {
         const key = document.getElementById('api-key').value.trim();
         let url   = document.getElementById('server-url').value.trim();
@@ -418,8 +640,12 @@ async function init() {
             const result = await verifyKey(url, key);
             if (result.ok) {
                 localStorage.setItem('dropzone_key', key);
+                localStorage.removeItem('dropzone_access_token');
                 localStorage.setItem('dropzone_url', url);
                 localStorage.setItem('dropzone_owner', result.data.owner);
+                config.apiKey = key;
+                config.accessToken = null;
+                config.serverUrl = url;
                 config.ownerName = result.data.owner;
                 showMain();
             } else {
@@ -437,6 +663,43 @@ async function init() {
         }
     });
 
+    oauthBtn?.addEventListener('click', async () => {
+        let url = 'https://shareit.cns-studios.com';
+        if (url.endsWith('/')) url = url.slice(0, -1);
+
+        oauthBtn.disabled = true;
+        const originalLabel = oauthBtn.textContent;
+        oauthBtn.textContent = 'Opening browser...';
+
+        try {
+            const sessionId = await beginLoopbackOAuth(url, tauriInvoke);
+            oauthBtn.textContent = 'Waiting for login...';
+            const result = await waitForLoopbackOAuth(tauriInvoke, sessionId);
+            const verifyPayload = await verifyLoopbackToken(url, result.access_token);
+
+            localStorage.setItem('dropzone_access_token', result.access_token);
+            localStorage.removeItem('dropzone_key');
+            localStorage.setItem('dropzone_url', url);
+            localStorage.setItem('dropzone_owner', verifyPayload.owner || 'Authenticated User');
+
+            config.accessToken = result.access_token;
+            config.apiKey = null;
+            config.serverUrl = url;
+            config.ownerName = verifyPayload.owner || 'Authenticated User';
+
+            showMain();
+        } catch (error) {
+            console.error('OAuth login failed:', error);
+            await showModal({
+                title: 'OAuth login failed',
+                message: error?.message || 'Could not complete OAuth login. You can still use API key login.',
+            });
+        } finally {
+            oauthBtn.disabled = false;
+            oauthBtn.textContent = originalLabel || 'Sign in with CNS account';
+        }
+    });
+
     document.getElementById('btn-reset').addEventListener('click', async () => {
         const confirmed = await showModal({
             title: 'Sign out',
@@ -446,6 +709,8 @@ async function init() {
         });
         if (!confirmed) return;
 
+        disconnectDesktopSocket();
+        disconnectEnrollmentSocket();
         localStorage.clear();
         window.location.reload();
     });
@@ -477,7 +742,7 @@ async function init() {
         console.warn("Tauri context NOT detected. Running in standard browser mode.");
     }
 
-    if (config.apiKey && config.serverUrl) {
+    if ((config.apiKey || config.accessToken) && config.serverUrl) {
         showMain();
     } else {
         showOnboarding();
@@ -676,6 +941,8 @@ function showMain() {
 
     
     renderPairingQRCodes();
+    connectDesktopSocket();
+    connectEnrollmentSocket();
 
     loadRecentFiles();
 
@@ -691,7 +958,11 @@ function showMain() {
         searchInput.dataset.bound = '1';
         searchInput.addEventListener('input', () => {
             recentSearchQuery = searchInput.value;
-            renderRecentFiles();
+            if (config.accessToken) {
+                loadRecentFiles();
+            } else {
+                renderRecentFiles();
+            }
         });
         searchInput.addEventListener('keydown', (event) => {
             if (event.key === 'Escape') {
@@ -726,6 +997,150 @@ function showMain() {
     }
 }
 
+function disconnectDesktopSocket() {
+    if (desktopSocketRetryTimer) {
+        clearTimeout(desktopSocketRetryTimer);
+        desktopSocketRetryTimer = null;
+    }
+    if (desktopSocket) {
+        try {
+            desktopSocket.onclose = null;
+            desktopSocket.close();
+        } catch (_) {
+        }
+        desktopSocket = null;
+    }
+}
+
+function disconnectEnrollmentSocket() {
+    if (enrollmentSocketRetryTimer) {
+        clearTimeout(enrollmentSocketRetryTimer);
+        enrollmentSocketRetryTimer = null;
+    }
+    if (enrollmentSocket) {
+        try {
+            enrollmentSocket.onclose = null;
+            enrollmentSocket.close();
+        } catch (_) {
+        }
+        enrollmentSocket = null;
+    }
+}
+
+function connectDesktopSocket() {
+    disconnectDesktopSocket();
+
+    if (!config.serverUrl || (!config.apiKey && !config.accessToken)) {
+        return;
+    }
+
+    let wsUrl = '';
+    try {
+        const base = new URL(config.serverUrl);
+        const scheme = base.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${scheme}//${base.host}/desktop/ws`;
+        if (config.accessToken) {
+            wsUrl += `?token=${encodeURIComponent(config.accessToken)}`;
+        } else {
+            wsUrl += `?key=${encodeURIComponent(config.apiKey)}`;
+        }
+    } catch (err) {
+        console.error('Invalid server URL for websocket:', err);
+        return;
+    }
+
+    try {
+        desktopSocket = new WebSocket(wsUrl);
+    } catch (err) {
+        console.error('Failed to create websocket:', err);
+        scheduleDesktopSocketReconnect();
+        return;
+    }
+
+    desktopSocket.onmessage = (event) => {
+        try {
+            const payload = JSON.parse(event.data);
+            if (payload?.type === 'new_file') {
+                loadRecentFiles();
+                showToast('New upload available in your list.');
+            }
+        } catch (_) {
+        }
+    };
+
+    desktopSocket.onclose = () => {
+        scheduleDesktopSocketReconnect();
+    };
+
+    desktopSocket.onerror = () => {
+        try {
+            desktopSocket?.close();
+        } catch (_) {
+        }
+    };
+}
+
+function connectEnrollmentSocket() {
+    disconnectEnrollmentSocket();
+
+    if (!config.serverUrl || !config.accessToken) {
+        return;
+    }
+
+    let wsUrl = '';
+    try {
+        const base = new URL(config.serverUrl);
+        const scheme = base.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${scheme}//${base.host}/desktop/me/devices/ws?token=${encodeURIComponent(config.accessToken)}`;
+    } catch (err) {
+        console.error('Invalid server URL for enrollment websocket:', err);
+        return;
+    }
+
+    try {
+        enrollmentSocket = new WebSocket(wsUrl);
+    } catch (err) {
+        console.error('Failed to create enrollment websocket:', err);
+        scheduleEnrollmentSocketReconnect();
+        return;
+    }
+
+    enrollmentSocket.onmessage = () => {
+        refreshPendingEnrollments();
+    };
+
+    enrollmentSocket.onclose = () => {
+        scheduleEnrollmentSocketReconnect();
+    };
+
+    enrollmentSocket.onerror = () => {
+        try {
+            enrollmentSocket?.close();
+        } catch (_) {
+        }
+    };
+}
+
+function scheduleDesktopSocketReconnect() {
+    if (desktopSocketRetryTimer) {
+        clearTimeout(desktopSocketRetryTimer);
+    }
+    desktopSocketRetryTimer = setTimeout(() => {
+        desktopSocketRetryTimer = null;
+        connectDesktopSocket();
+    }, 4000);
+}
+
+function scheduleEnrollmentSocketReconnect() {
+    if (enrollmentSocketRetryTimer) {
+        clearTimeout(enrollmentSocketRetryTimer);
+    }
+    enrollmentSocketRetryTimer = setTimeout(() => {
+        enrollmentSocketRetryTimer = null;
+        connectEnrollmentSocket();
+    }, 4000);
+}
+
 function showSettings() {
     mainScreen.classList.add('hidden');
     document.getElementById('settings').classList.remove('hidden');
@@ -734,13 +1149,55 @@ function showSettings() {
 
     
     const key = config.apiKey || '';
-    document.getElementById('s-key').textContent =
-        key.length > 8 ? key.slice(0, 8) + '-••••-••••-••••' : key || '—';
+    if (config.accessToken) {
+        document.getElementById('s-key').textContent = 'OAuth bearer token';
+    } else {
+        document.getElementById('s-key').textContent =
+            key.length > 8 ? key.slice(0, 8) + '-••••-••••-••••' : key || '—';
+    }
 
     
     const url = config.serverUrl || '';
     document.getElementById('s-url').textContent =
         url.replace(/^https?:\/\//, '') || '—';
+
+    const approverInput = document.getElementById('enroll-approver-device-id');
+    if (approverInput) {
+        approverInput.value = getOrCreateApproverDeviceId();
+        if (!approverInput.dataset.bound) {
+            approverInput.dataset.bound = '1';
+            approverInput.addEventListener('change', () => {
+                const nextValue = approverInput.value.trim();
+                if (nextValue) {
+                    localStorage.setItem('dropzone_device_id', nextValue);
+                }
+            });
+        }
+    }
+
+    const wrapAlgInput = document.getElementById('enroll-uk-wrap-alg');
+    if (wrapAlgInput && !wrapAlgInput.value.trim()) {
+        wrapAlgInput.value = 'x25519-xsalsa20-poly1305';
+    }
+
+    const wrapMetaInput = document.getElementById('enroll-uk-wrap-meta');
+    if (wrapMetaInput && !wrapMetaInput.value.trim()) {
+        wrapMetaInput.value = '{"version":1}';
+    }
+
+    const refreshEnrollmentsButton = document.getElementById('enroll-refresh');
+    if (refreshEnrollmentsButton && !refreshEnrollmentsButton.dataset.bound) {
+        refreshEnrollmentsButton.dataset.bound = '1';
+        refreshEnrollmentsButton.addEventListener('click', refreshPendingEnrollments);
+    }
+
+    if (config.accessToken) {
+        refreshPendingEnrollments();
+    } else {
+        pendingEnrollmentsCache = [];
+        renderPendingEnrollments();
+        setEnrollmentResult('Sign in with OAuth to manage device enrollments.', true);
+    }
 
     renderUpdaterUi();
 }
@@ -780,17 +1237,29 @@ async function setupTauriListeners() {
 }
 
 async function loadRecentFiles() {
-    if (!config.apiKey || !config.serverUrl) return;
+    if ((!config.apiKey && !config.accessToken) || !config.serverUrl) return;
 
     try {
-        const res = await httpRequest(`${config.serverUrl}/desktop/files`, {
-           headers: { 'X-API-KEY': config.apiKey }
-
-        });
+        const res = config.accessToken
+            ? await listRecentUploads(config, { page: 1, perPage: 50, query: recentSearchQuery.trim() })
+            : await listDesktopFiles(config);
         if (!res.ok) return;
 
-        const text  = await res.text();
-        recentFilesCache = text ? JSON.parse(text) : [];
+        if (config.accessToken) {
+            const payload = await res.json();
+            const items = Array.isArray(payload?.items) ? payload.items : [];
+            recentFilesCache = items.map((item) => ({
+                id: item.file_id,
+                file_name: item.filename,
+                file_size: item.size_bytes,
+                uploaded_at: item.created_at,
+                expires_at: item.expires_at,
+                share_url: item.share_url,
+            }));
+        } else {
+            const text = await res.text();
+            recentFilesCache = text ? JSON.parse(text) : [];
+        }
         renderRecentFiles();
     } catch (e) {
         console.error("Failed to load files:", e);
@@ -827,15 +1296,11 @@ async function uploadFiles(paths) {
 
             if (statusText) statusText.innerText = `Uploading ${fileName}…`;
 
-            const initRes = await httpRequest(`${config.serverUrl}/desktop/upload/init`, {
-                method:  'POST',
-                headers: { 'X-API-KEY': config.apiKey, 'Content-Type': 'application/json' },
-                body:    JSON.stringify({
-                    file_name:    fileName,
-                    file_size:    totalSize,
-                    total_chunks: totalChunks,
-                    chunk_size:   CHUNK_SIZE,
-                }),
+            const initRes = await uploadInit(config, {
+                file_name: fileName,
+                file_size: totalSize,
+                total_chunks: totalChunks,
+                chunk_size: CHUNK_SIZE,
             });
             if (!initRes.ok) throw new Error('Init failed: ' + await initRes.text());
             const { session_id } = await initRes.json();
@@ -850,11 +1315,7 @@ async function uploadFiles(paths) {
                 form.append('chunk_index', String(ci));
                 form.append('chunk',       new Blob([chunk]), 'chunk');
 
-                const chunkRes = await httpRequest(`${config.serverUrl}/desktop/upload/chunk`, {
-                    method:  'POST',
-                    headers: { 'X-API-KEY': config.apiKey },
-                    body:    form,
-                });
+                const chunkRes = await uploadChunk(config, form);
                 if (!chunkRes.ok) throw new Error('Chunk upload failed at index ' + ci);
 
                 const fileProgress  = (ci + 1) / totalChunks;
@@ -862,21 +1323,13 @@ async function uploadFiles(paths) {
                 fill.style.width = (totalProgress * 100) + '%';
             }
 
-            const completeRes = await httpRequest(`${config.serverUrl}/desktop/upload/complete`, {
-                method:  'POST',
-                headers: { 'X-API-KEY': config.apiKey, 'Content-Type': 'application/json' },
-                body:    JSON.stringify({ session_id, confirmed: true }),
-            });
+            const completeRes = await uploadComplete(config, session_id);
             if (!completeRes.ok) throw new Error('Complete failed');
 
             if (statusText) statusText.innerText = `Assembling ${fileName}…`;
             await pollAssemblyStatus(session_id);
 
-            const finalRes = await httpRequest(`${config.serverUrl}/desktop/upload/finalize`, {
-                method:  'POST',
-                headers: { 'X-API-KEY': config.apiKey, 'Content-Type': 'application/json' },
-                body:    JSON.stringify({ session_id, duration: config.duration }),
-            });
+            const finalRes = await uploadFinalize(config, { session_id, duration: config.duration });
             if (!finalRes.ok) throw new Error('Finalize failed');
 
         } catch (err) {
@@ -899,9 +1352,7 @@ async function pollAssemblyStatus(sessionID) {
     for (let i = 0; i < maxAttempts; i++) {
         await new Promise(r => setTimeout(r, 500));
         try {
-            const res  = await httpRequest(`${config.serverUrl}/desktop/upload/status/${sessionID}`, {
-                headers: { 'X-API-KEY': config.apiKey },
-            });
+            const res = await uploadStatus(config, sessionID);
             const data = await res.json();
             if (data.status === 'done') return;
             if (data.status && data.status.startsWith('error:')) {
