@@ -1,5 +1,3 @@
-import { verifyOAuthToken } from './desktopApi.js';
-
 const POLL_INTERVAL_MS = 800;
 const POLL_TIMEOUT_MS = 260000;
 
@@ -51,11 +49,13 @@ export async function waitForLoopbackOAuth(tauriInvoke, sessionId, timeoutMs = P
     throw new Error('OAuth login timed out');
 }
 
-export async function verifyLoopbackToken(serverUrl, token) {
-    const response = await verifyOAuthToken(serverUrl, token);
-    if (!response.ok) {
-        const message = await response.text().catch(() => 'Bearer token rejected by server');
-        throw new Error(message || 'Bearer token rejected by server');
-    }
-    return response.json();
+export async function verifyLoopbackToken(tauriInvoke, serverUrl, token) {
+    return tauriInvoke('desktop_device_api', {
+        request: {
+            server_url: serverUrl,
+            access_token: token,
+            method: 'GET',
+            path: '/desktop/auth/oauth/verify',
+        },
+    });
 }

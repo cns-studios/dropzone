@@ -95,6 +95,15 @@ struct UpdateInfo {
     notes: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DesktopApiRequest {
+    server_url: String,
+    access_token: String,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+}
+
 fn normalize_version(version: &str) -> String {
     version.trim().trim_start_matches('v').to_string()
 }
@@ -167,6 +176,43 @@ fn fetch_desktop_oauth_config(server_url: &str) -> Result<DesktopOAuthConfig> {
         .json::<DesktopOAuthConfig>()
         .context("failed to parse desktop OAuth config JSON")?;
     Ok(config)
+}
+
+#[tauri::command]
+fn desktop_device_api(request: DesktopApiRequest) -> Result<serde_json::Value, String> {
+    let method = reqwest::Method::from_bytes(request.method.as_bytes())
+        .map_err(|err| format!("invalid HTTP method: {}", err))?;
+    let url = format!("{}{}", request.server_url.trim_end_matches('/'), request.path);
+
+    let client = github_client().map_err(|err| err.to_string())?;
+    let mut builder = client
+        .request(method, url)
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {}", request.access_token))
+        .header("User-Agent", HTTP_USER_AGENT);
+
+    if let Some(body) = request.body {
+        builder = builder.header("Content-Type", "application/json").body(body.to_string());
+    }
+
+    let response = builder
+        .send()
+        .map_err(|err| format!("request failed: {}", err))?;
+
+    let status = response.status();
+    let text = response.text().map_err(|err| format!("failed to read response: {}", err))?;
+    if !status.is_success() {
+        return Err(text);
+    }
+
+    if text.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(value) => Ok(value),
+        Err(_) => Ok(serde_json::json!({"text": text})),
+    }
 }
 
 fn exchange_auth_code(
@@ -874,6 +920,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init()) 
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -937,6 +984,7 @@ fn main() {
             app_version,
             check_for_updates,
             download_and_install_update,
+            desktop_device_api,
             start_oauth_loopback,
             poll_oauth_loopback
         ])

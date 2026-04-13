@@ -15,7 +15,7 @@ import {
     uploadStatus,
     verifyDesktopKey,
 } from './lib/desktopApi.js';
-import { beginLoopbackOAuth, verifyLoopbackToken, waitForLoopbackOAuth } from './lib/oauth.js';
+import { beginLoopbackOAuth, waitForLoopbackOAuth } from './lib/oauth.js';
 
 let appWindow = null;
 let listen = null;
@@ -81,9 +81,24 @@ function clearStoredOAuthState() {
 function isRecoverableOAuthBootstrapError(err) {
     const message = String(err?.message || '').toLowerCase();
     return message.includes('missing authentication credentials')
+    || message.includes('mismatch')
         || message.includes('missing bearer token')
         || message.includes('invalid bearer token')
-        || message.includes('auth required');
+        || message.includes('auth required')
+    || message.includes('missing_auth')
+    || message.includes('approver device is not trusted')
+    || message.includes('device_not_trusted')
+        || message.includes('load failed')
+        || message.includes('failed to fetch')
+        || message.includes('networkerror');
+}
+
+function isConnectivityOAuthError(err) {
+    const message = String(err?.message || '').toLowerCase();
+    return message.includes('load failed')
+        || message.includes('failed to fetch')
+        || message.includes('networkerror')
+        || message.includes('cors');
 }
 
 let onboardingScreen, mainScreen, dropArea, statusText;
@@ -296,20 +311,26 @@ function getDeviceRegistrationPayload(deviceID) {
 }
 
 async function registerOAuthDevice(deviceID) {
-    const res = await registerDevice(config, getDeviceRegistrationPayload(deviceID));
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) {
-        throw new Error(payload.error || payload.code || 'Device registration failed');
-    }
-    return payload;
+    return tauriInvoke('desktop_device_api', {
+        request: {
+            server_url: config.serverUrl,
+            access_token: config.accessToken,
+            method: 'POST',
+            path: '/desktop/me/devices/register',
+            body: getDeviceRegistrationPayload(deviceID),
+        },
+    });
 }
 
 async function ensureEnrollmentForDevice(deviceID) {
-    const pendingRes = await listPendingEnrollments(config);
-    const pendingPayload = await pendingRes.json().catch(() => ({}));
-    if (!pendingRes.ok) {
-        throw new Error(pendingPayload.error || 'Failed to inspect pending enrollments');
-    }
+    const pendingPayload = await tauriInvoke('desktop_device_api', {
+        request: {
+            server_url: config.serverUrl,
+            access_token: config.accessToken,
+            method: 'GET',
+            path: '/desktop/me/devices/enrollments/pending',
+        },
+    });
 
     const existing = Array.isArray(pendingPayload?.items)
         ? pendingPayload.items.find((item) => (item?.enrollment?.request_device_id || '') === deviceID)
@@ -323,12 +344,15 @@ async function ensureEnrollmentForDevice(deviceID) {
         };
     }
 
-    const createRes = await createEnrollment(config, { request_device_id: deviceID });
-    const createPayload = await createRes.json().catch(() => ({}));
-    if (!createRes.ok) {
-        throw new Error(createPayload.error || 'Failed to create approval request');
-    }
-    return createPayload;
+    return tauriInvoke('desktop_device_api', {
+        request: {
+            server_url: config.serverUrl,
+            access_token: config.accessToken,
+            method: 'POST',
+            path: '/desktop/me/devices/enrollments',
+            body: { request_device_id: deviceID },
+        },
+    });
 }
 
 function setApprovalWaitStatus(message, isError = false) {
@@ -395,7 +419,19 @@ function startApprovalPolling() {
 
 async function ensureOAuthDeviceReady() {
     const deviceID = getOrCreateApproverDeviceId();
-    const registration = await registerOAuthDevice(deviceID);
+    let registration;
+    try {
+        registration = await registerOAuthDevice(deviceID);
+    } catch (err) {
+        showApprovalWaitScreen({
+            deviceID,
+            enrollmentID: '',
+            verificationCode: 'pending',
+        });
+        setApprovalWaitStatus(err?.message || 'Waiting for server/device approval endpoint.', true);
+        startApprovalPolling();
+        return false;
+    }
 
     if (!registration?.needs_enrollment) {
         stopApprovalPolling();
@@ -403,7 +439,20 @@ async function ensureOAuthDeviceReady() {
         return true;
     }
 
-    const enrollment = await ensureEnrollmentForDevice(deviceID);
+    let enrollment;
+    try {
+        enrollment = await ensureEnrollmentForDevice(deviceID);
+    } catch (err) {
+        showApprovalWaitScreen({
+            deviceID,
+            enrollmentID: '',
+            verificationCode: 'pending',
+        });
+        setApprovalWaitStatus(err?.message || 'Could not create enrollment yet.', true);
+        startApprovalPolling();
+        return false;
+    }
+
     showApprovalWaitScreen({
         deviceID,
         enrollmentID: enrollment.enrollment_id,
@@ -499,18 +548,21 @@ function renderEnrollmentPopup() {
             }
 
             try {
-                const res = await approveEnrollment(config, enrollmentId, {
-                    approver_device_id: input.approverDeviceID,
-                    verification_code: verificationCode,
-                    wrapped_user_key_b64: input.wrappedUserKeyB64,
-                    uk_wrap_alg: input.ukWrapAlg,
-                    uk_wrap_meta: input.ukWrapMeta,
+                await tauriInvoke('desktop_device_api', {
+                    request: {
+                        server_url: config.serverUrl,
+                        access_token: config.accessToken,
+                        method: 'POST',
+                        path: `/desktop/me/devices/enrollments/${encodeURIComponent(enrollmentId)}/approve`,
+                        body: {
+                            approver_device_id: input.approverDeviceID,
+                            verification_code: verificationCode,
+                            wrapped_user_key_b64: input.wrappedUserKeyB64,
+                            uk_wrap_alg: input.ukWrapAlg,
+                            uk_wrap_meta: input.ukWrapMeta,
+                        },
+                    },
                 });
-                const payload = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    setPopupEnrollmentResult(payload.error || 'Failed to approve enrollment.', true);
-                    return;
-                }
                 setPopupEnrollmentResult('Enrollment approved.');
                 await refreshPendingEnrollments();
             } catch (err) {
@@ -531,14 +583,17 @@ function renderEnrollmentPopup() {
             }
 
             try {
-                const res = await rejectEnrollment(config, enrollmentId, {
-                    approver_device_id: input.approverDeviceID,
+                await tauriInvoke('desktop_device_api', {
+                    request: {
+                        server_url: config.serverUrl,
+                        access_token: config.accessToken,
+                        method: 'POST',
+                        path: `/desktop/me/devices/enrollments/${encodeURIComponent(enrollmentId)}/reject`,
+                        body: {
+                            approver_device_id: input.approverDeviceID,
+                        },
+                    },
                 });
-                const payload = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    setPopupEnrollmentResult(payload.error || 'Failed to reject enrollment.', true);
-                    return;
-                }
                 setPopupEnrollmentResult('Enrollment rejected.');
                 await refreshPendingEnrollments();
             } catch (err) {
@@ -627,18 +682,21 @@ function renderPendingEnrollments() {
             }
 
             try {
-                const res = await approveEnrollment(config, enrollmentId, {
-                    approver_device_id: approverDeviceID,
-                    verification_code: verificationCode,
-                    wrapped_user_key_b64: wrappedUserKeyB64,
-                    uk_wrap_alg: ukWrapAlg,
-                    uk_wrap_meta: ukWrapMeta,
+                await tauriInvoke('desktop_device_api', {
+                    request: {
+                        server_url: config.serverUrl,
+                        access_token: config.accessToken,
+                        method: 'POST',
+                        path: `/desktop/me/devices/enrollments/${encodeURIComponent(enrollmentId)}/approve`,
+                        body: {
+                            approver_device_id: approverDeviceID,
+                            verification_code: verificationCode,
+                            wrapped_user_key_b64: wrappedUserKeyB64,
+                            uk_wrap_alg: ukWrapAlg,
+                            uk_wrap_meta: ukWrapMeta,
+                        },
+                    },
                 });
-                const payload = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    setEnrollmentResult(payload.error || 'Failed to approve enrollment.', true);
-                    return;
-                }
                 setEnrollmentResult('Enrollment approved.');
                 await refreshPendingEnrollments();
             } catch (err) {
@@ -660,14 +718,17 @@ function renderPendingEnrollments() {
             }
 
             try {
-                const res = await rejectEnrollment(config, enrollmentId, {
-                    approver_device_id: approverDeviceID,
+                await tauriInvoke('desktop_device_api', {
+                    request: {
+                        server_url: config.serverUrl,
+                        access_token: config.accessToken,
+                        method: 'POST',
+                        path: `/desktop/me/devices/enrollments/${encodeURIComponent(enrollmentId)}/reject`,
+                        body: {
+                            approver_device_id: approverDeviceID,
+                        },
+                    },
                 });
-                const payload = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    setEnrollmentResult(payload.error || 'Failed to reject enrollment.', true);
-                    return;
-                }
                 setEnrollmentResult('Enrollment rejected.');
                 await refreshPendingEnrollments();
             } catch (err) {
@@ -689,12 +750,14 @@ async function refreshPendingEnrollments() {
     }
 
     try {
-        const res = await listPendingEnrollments(config);
-        const payload = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            setEnrollmentResult(payload.error || 'Failed to load pending enrollments.', true);
-            return;
-        }
+        const payload = await tauriInvoke('desktop_device_api', {
+            request: {
+                server_url: config.serverUrl,
+                access_token: config.accessToken,
+                method: 'GET',
+                path: '/desktop/me/devices/enrollments/pending',
+            },
+        });
         pendingEnrollmentsCache = Array.isArray(payload?.items) ? payload.items : [];
         renderPendingEnrollments();
         renderEnrollmentPopup();
@@ -926,17 +989,16 @@ async function init() {
             const sessionId = await beginLoopbackOAuth(url, tauriInvoke);
             oauthBtn.textContent = 'Waiting for login...';
             const result = await waitForLoopbackOAuth(tauriInvoke, sessionId);
-            const verifyPayload = await verifyLoopbackToken(url, result.access_token);
 
             localStorage.setItem('dropzone_access_token', result.access_token);
             localStorage.removeItem('dropzone_key');
             localStorage.setItem('dropzone_url', url);
-            localStorage.setItem('dropzone_owner', verifyPayload.owner || 'Authenticated User');
+            localStorage.setItem('dropzone_owner', 'Authenticated User');
 
             config.accessToken = result.access_token;
             config.apiKey = null;
             config.serverUrl = url;
-            config.ownerName = verifyPayload.owner || 'Authenticated User';
+            config.ownerName = 'Authenticated User';
 
             const ready = await ensureOAuthDeviceReady();
             if (ready) {
