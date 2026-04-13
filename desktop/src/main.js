@@ -3,6 +3,7 @@ import {
     approveEnrollment,
     createEnrollment,
     downloadDesktopFile,
+    getFileAccess,
     listPendingEnrollments,
     listRecentUploads,
     listDesktopFiles,
@@ -121,6 +122,264 @@ let recentSearchQuery = '';
 let recentSearchOpen = false;
 let modalResolver = null;
 let pendingEnrollmentsCache = [];
+
+const FILE_KEY_CACHE_PREFIX = 'dropzone_file_key_v1_';
+const USER_KEY_STORAGE_KEY = 'dropzone_user_key_raw_v1';
+const ENC_SALT_LEN = 16;
+const ENC_IV_LEN = 12;
+const ENC_PBKDF2_ITERS = 100000;
+
+function toBase64(data) {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    let binary = '';
+    for (let index = 0; index < bytes.length; index += 1) {
+        binary += String.fromCharCode(bytes[index]);
+    }
+    return btoa(binary);
+}
+
+function fromBase64(value) {
+    const binary = atob(value || '');
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+}
+
+function getStoredFileKey(fileId) {
+    if (!fileId) return null;
+    return sessionStorage.getItem(`${FILE_KEY_CACHE_PREFIX}${fileId}`);
+}
+
+function setStoredFileKey(fileId, passphrase) {
+    if (!fileId || !passphrase) return;
+    sessionStorage.setItem(`${FILE_KEY_CACHE_PREFIX}${fileId}`, passphrase);
+}
+
+function getStoredUserKeyRaw() {
+    const value = localStorage.getItem(USER_KEY_STORAGE_KEY);
+    return value ? fromBase64(value) : null;
+}
+
+function setStoredUserKeyRaw(rawKey) {
+    if (!rawKey) return;
+    localStorage.setItem(USER_KEY_STORAGE_KEY, toBase64(rawKey));
+}
+
+function getHeaderValue(headers, name) {
+    if (!headers) return '';
+    if (typeof headers.get === 'function') {
+        return headers.get(name) || headers.get(name.toLowerCase()) || '';
+    }
+    return headers[name] || headers[name.toLowerCase()] || '';
+}
+
+function setInitialBootLoading(loading) {
+    const loadingEl = document.getElementById('app-loading');
+    if (!loadingEl) return;
+    loadingEl.classList.toggle('hidden', !loading);
+}
+
+function setDownloadActivity(active, options = {}) {
+    const wrap = document.getElementById('download-activity');
+    const label = document.getElementById('download-activity-label');
+    const value = document.getElementById('download-activity-value');
+    const fill = document.getElementById('download-activity-fill');
+    if (!wrap || !label || !value || !fill) return;
+
+    if (!active) {
+        wrap.classList.add('hidden');
+        wrap.classList.remove('is-indeterminate');
+        wrap.setAttribute('aria-hidden', 'true');
+        fill.style.width = '0%';
+        value.textContent = '0%';
+        label.textContent = 'Downloading...';
+        return;
+    }
+
+    wrap.classList.remove('hidden');
+    wrap.setAttribute('aria-hidden', 'false');
+
+    const text = options.label || 'Downloading...';
+    label.textContent = text;
+
+    if (options.indeterminate) {
+        wrap.classList.add('is-indeterminate');
+        value.textContent = '...';
+        return;
+    }
+
+    wrap.classList.remove('is-indeterminate');
+    const pct = Math.max(0, Math.min(100, Math.round(options.progress || 0)));
+    fill.style.width = `${pct}%`;
+    value.textContent = `${pct}%`;
+}
+
+async function derivePassphraseKey(passphrase, salt) {
+    const keyMaterial = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(passphrase),
+        'PBKDF2',
+        false,
+        ['deriveKey']
+    );
+
+    return crypto.subtle.deriveKey(
+        {
+            name: 'PBKDF2',
+            salt,
+            iterations: ENC_PBKDF2_ITERS,
+            hash: 'SHA-256',
+        },
+        keyMaterial,
+        {
+            name: 'AES-GCM',
+            length: 256,
+        },
+        false,
+        ['decrypt']
+    );
+}
+
+async function decryptEncryptedBytes(bytes, passphrase) {
+    const raw = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (raw.byteLength <= ENC_SALT_LEN + ENC_IV_LEN) {
+        throw new Error('Encrypted payload is invalid.');
+    }
+
+    const salt = raw.slice(0, ENC_SALT_LEN);
+    const iv = raw.slice(ENC_SALT_LEN, ENC_SALT_LEN + ENC_IV_LEN);
+    const ciphertext = raw.slice(ENC_SALT_LEN + ENC_IV_LEN);
+    const key = await derivePassphraseKey(passphrase, salt);
+    const decrypted = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        ciphertext
+    );
+    return new Uint8Array(decrypted);
+}
+
+async function readResponseBlobWithProgress(response) {
+    const contentType = String(getHeaderValue(response.headers, 'content-type') || '').toLowerCase();
+    if (contentType.includes('text/html')) {
+        const html = await response.text();
+        throw new Error(`Download endpoint returned HTML instead of file bytes (${response.status || 'unknown'}). ${String(html || '').slice(0, 120)}`);
+    }
+
+    const totalRaw = getHeaderValue(response.headers, 'content-length');
+    const total = Number.parseInt(totalRaw, 10);
+    const canTrack = !!response.body && typeof response.body.getReader === 'function' && Number.isFinite(total) && total > 0;
+
+    if (!canTrack) {
+        setDownloadActivity(true, { label: 'Downloading file...', indeterminate: true });
+        return response.blob();
+    }
+
+    const reader = response.body.getReader();
+    const chunks = [];
+    let loaded = 0;
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+            chunks.push(value);
+            loaded += value.byteLength;
+            const pct = (loaded / total) * 100;
+            setDownloadActivity(true, { label: 'Downloading file...', progress: pct });
+        }
+    }
+
+    return new Blob(chunks, { type: 'application/octet-stream' });
+}
+
+async function resolveOAuthDownloadPassphrase(fileId) {
+    const cached = getStoredFileKey(fileId);
+    if (cached) {
+        return cached;
+    }
+
+    const identity = await getOrCreateDeviceIdentity();
+    const accessResp = await getFileAccess(config, fileId, identity.deviceId);
+    if (!accessResp.ok) {
+        const errText = await accessResp.text();
+        throw new Error(errText || 'Unable to retrieve file access envelope.');
+    }
+
+    const payload = await accessResp.json();
+    const fileEnvelope = payload?.file_key_envelope;
+    const userEnvelope = payload?.user_key_envelope;
+    if (!fileEnvelope?.wrapped_dek_b64 || !userEnvelope?.wrapped_uk_b64) {
+        throw new Error('File encryption envelope is missing.');
+    }
+
+    let userKeyRaw = getStoredUserKeyRaw();
+    if (!userKeyRaw) {
+        const privateKey = await crypto.subtle.importKey(
+            'jwk',
+            identity.privateKeyJWK,
+            { name: 'RSA-OAEP', hash: 'SHA-256' },
+            false,
+            ['decrypt']
+        );
+        const unwrapped = await crypto.subtle.decrypt(
+            { name: 'RSA-OAEP' },
+            privateKey,
+            fromBase64(userEnvelope.wrapped_uk_b64)
+        );
+        userKeyRaw = new Uint8Array(unwrapped);
+        setStoredUserKeyRaw(userKeyRaw);
+    }
+
+    const userKey = await crypto.subtle.importKey(
+        'raw',
+        userKeyRaw,
+        { name: 'AES-GCM' },
+        false,
+        ['decrypt']
+    );
+
+    const dekBytes = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: fromBase64(fileEnvelope.dek_wrap_nonce_b64 || '') },
+        userKey,
+        fromBase64(fileEnvelope.wrapped_dek_b64)
+    );
+
+    const passphrase = new TextDecoder().decode(new Uint8Array(dekBytes));
+    setStoredFileKey(fileId, passphrase);
+    return passphrase;
+}
+
+async function downloadAndSaveRecentFile(fileId, fileName) {
+    setDownloadActivity(true, { label: 'Downloading file...', progress: 0 });
+    try {
+        const response = await downloadDesktopFile(config, fileId);
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(errText || 'Download failed.');
+        }
+
+        let blob = await readResponseBlobWithProgress(response);
+
+        if (config.accessToken) {
+            setDownloadActivity(true, { label: 'Decrypting...', indeterminate: true });
+            const passphrase = await resolveOAuthDownloadPassphrase(fileId);
+            const encryptedBytes = new Uint8Array(await blob.arrayBuffer());
+            const decryptedBytes = await decryptEncryptedBytes(encryptedBytes, passphrase);
+            blob = new Blob([decryptedBytes], { type: 'application/octet-stream' });
+        }
+
+        setDownloadActivity(true, { label: 'Saving file...', progress: 100 });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = fileName || `${fileId}.bin`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+    } finally {
+        setTimeout(() => setDownloadActivity(false), 450);
+    }
+}
 
 const EXT_COLORS = {
     pdf:  { bg: '#fde8e8', color: '#c0392b' },
@@ -271,11 +530,12 @@ function renderRecentFiles() {
             </button>`;
 
         item.querySelector('.file-dl').addEventListener('click', async () => {
-            const blob = await downloadDesktopFile(config, f.id).then((r) => r.blob());
-            const url = URL.createObjectURL(blob);
-            const a   = document.createElement('a');
-            a.href = url; a.download = f.file_name; a.click();
-            URL.revokeObjectURL(url);
+            try {
+                await downloadAndSaveRecentFile(f.id, f.file_name);
+            } catch (err) {
+                console.error('Recent download failed:', err);
+                showToast(err?.message || 'Download failed.');
+            }
         });
 
         list.appendChild(item);
@@ -1003,6 +1263,7 @@ async function init() {
     mainScreen       = document.getElementById('main-drop');
     dropArea         = document.getElementById('drop-area');
     statusText       = document.getElementById('status-text');
+    setInitialBootLoading(true);
 
     bindModalEvents();
 
@@ -1153,29 +1414,35 @@ async function init() {
         console.warn("Tauri context NOT detected. Running in standard browser mode.");
     }
 
-    if (config.accessToken && config.serverUrl) {
-        try {
-            const ready = await ensureOAuthDeviceReady();
-            if (ready) {
-                showMain();
+    try {
+        if (config.accessToken && config.serverUrl) {
+            try {
+                const ready = await ensureOAuthDeviceReady();
+                if (ready) {
+                    showMain();
+                } else if (!approvalWaitState) {
+                    showOnboarding();
+                }
+            } catch (err) {
+                console.error('OAuth device readiness failed:', err);
+                if (isRecoverableOAuthBootstrapError(err)) {
+                    clearStoredOAuthState();
+                    loadConfig();
+                } else {
+                    await showModal({
+                        title: 'OAuth setup failed',
+                        message: err?.message || 'Could not initialize trusted device state for OAuth login.',
+                    });
+                }
+                showOnboarding();
             }
-        } catch (err) {
-            console.error('OAuth device readiness failed:', err);
-            if (isRecoverableOAuthBootstrapError(err)) {
-                clearStoredOAuthState();
-                loadConfig();
-            } else {
-                await showModal({
-                    title: 'OAuth setup failed',
-                    message: err?.message || 'Could not initialize trusted device state for OAuth login.',
-                });
-            }
+        } else if (config.apiKey && config.serverUrl) {
+            showMain();
+        } else {
             showOnboarding();
         }
-    } else if (config.apiKey && config.serverUrl) {
-        showMain();
-    } else {
-        showOnboarding();
+    } finally {
+        setInitialBootLoading(false);
     }
 }
 

@@ -14,6 +14,15 @@ function authHeaders(config, extra = {}) {
     };
 }
 
+function getResponseHeader(response, name) {
+    const headers = response?.headers;
+    if (!headers) return '';
+    if (typeof headers.get === 'function') {
+        return headers.get(name) || headers.get(name.toLowerCase()) || '';
+    }
+    return headers[name] || headers[name.toLowerCase()] || '';
+}
+
 export function verifyDesktopKey(url, key) {
     return httpRequest(`${url}/desktop/auth/verify?key=${encodeURIComponent(key)}`, {
         method: 'GET',
@@ -121,8 +130,32 @@ export function rejectEnrollment(config, enrollmentId, payload) {
 }
 
 export function downloadDesktopFile(config, fileId) {
-    return httpRequest(`${config.serverUrl}/desktop/files/${encodeURIComponent(fileId)}/download`, {
+    const encodedFileId = encodeURIComponent(fileId);
+    const desktopUrl = `${config.serverUrl}/desktop/files/${encodedFileId}/download`;
+    const apiUrl = `${config.serverUrl}/api/file/${encodedFileId}/download`;
+
+    return httpRequest(desktopUrl, {
         headers: authHeaders(config),
+    }).then((response) => {
+        const contentType = String(getResponseHeader(response, 'content-type') || '').toLowerCase();
+        const looksLikeHtml = contentType.includes('text/html');
+
+        if (response.ok && !looksLikeHtml) {
+            return response;
+        }
+
+        const status = Number(response.status || 0);
+        if (looksLikeHtml || status === 404 || status === 405 || status === 501) {
+            return httpRequest(apiUrl, {
+                headers: authHeaders(config),
+            });
+        }
+
+        return response;
+    }).catch(() => {
+        return httpRequest(apiUrl, {
+            headers: authHeaders(config),
+        });
     });
 }
 

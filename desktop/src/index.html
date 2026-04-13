@@ -8,6 +8,10 @@
 </head>
 <body>
     <div id="app" class="container">
+        <div id="app-loading" class="app-loading-screen">
+            <div class="app-loading-spinner" aria-hidden="true"></div>
+            <p class="app-loading-text">Loading Dropzone...</p>
+        </div>
 
         <div id="onboarding" class="screen">
             <div class="ob-icon-wrap">
@@ -110,6 +114,16 @@
             </div>
 
             <div id="duration-picker" class="duration-picker"></div>
+
+            <div id="download-activity" class="download-activity hidden" aria-hidden="true">
+                <div class="download-activity-head">
+                    <span id="download-activity-label">Downloading...</span>
+                    <span id="download-activity-value">0%</span>
+                </div>
+                <div class="download-activity-bar">
+                    <span id="download-activity-fill" class="download-activity-fill"></span>
+                </div>
+            </div>
 
             <div class="section recent-section">
                 <div class="recent-header">

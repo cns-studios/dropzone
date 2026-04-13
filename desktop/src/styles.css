@@ -52,6 +52,37 @@ body{
     overflow-y:auto;
 }
 
+.app-loading-screen{
+    position:absolute;
+    inset:0;
+    z-index:120;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:12px;
+    background:linear-gradient(180deg, rgba(253,252,250,0.98), rgba(245,242,238,0.98));
+}
+
+.app-loading-spinner{
+    width:30px;
+    height:30px;
+    border-radius:999px;
+    border:3px solid rgba(201,125,78,0.28);
+    border-top-color:var(--accent);
+    animation:app-spin 0.9s linear infinite;
+}
+
+.app-loading-text{
+    font-size:12.5px;
+    font-weight:700;
+    color:var(--dim);
+}
+
+@keyframes app-spin {
+    to { transform: rotate(360deg); }
+}
+
 .hidden{display:none !important;}
 
 /* ── ONBOARDING ── */
@@ -483,6 +514,52 @@ body{
     gap: 6px;
     justify-content: center;
     margin: 10px 0 4px;
+}
+
+.download-activity{
+    margin:0 14px 10px;
+    border:1px solid var(--border);
+    border-radius:10px;
+    background:var(--surface);
+    padding:9px 10px;
+}
+
+.download-activity-head{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    margin-bottom:7px;
+    font-size:11.5px;
+    font-weight:700;
+    color:var(--dim);
+}
+
+.download-activity-bar{
+    width:100%;
+    height:6px;
+    border-radius:999px;
+    background:var(--border);
+    overflow:hidden;
+}
+
+.download-activity-fill{
+    display:block;
+    width:0%;
+    height:100%;
+    border-radius:999px;
+    background:var(--accent);
+    transition:width 0.18s ease;
+}
+
+.download-activity.is-indeterminate .download-activity-fill{
+    width:38%;
+    animation:download-indeterminate 1s ease-in-out infinite;
+}
+
+@keyframes download-indeterminate {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(280%); }
 }
 
 .dur-btn {
