@@ -53,16 +53,38 @@ const DURATIONS = [
 ];
 
 function loadConfig() {
+    const normalizeStored = (value) => {
+        if (!value) return null;
+        const trimmed = value.trim();
+        if (!trimmed || trimmed === 'null' || trimmed === 'undefined') {
+            return null;
+        }
+        return trimmed;
+    };
+
     config = {
-        apiKey: localStorage.getItem('dropzone_key'),
-        accessToken: localStorage.getItem('dropzone_access_token'),
-        serverUrl: localStorage.getItem('dropzone_url'),
-        ownerName: localStorage.getItem('dropzone_owner'),
+        apiKey: normalizeStored(localStorage.getItem('dropzone_key')),
+        accessToken: normalizeStored(localStorage.getItem('dropzone_access_token')),
+        serverUrl: normalizeStored(localStorage.getItem('dropzone_url')),
+        ownerName: normalizeStored(localStorage.getItem('dropzone_owner')),
         duration: localStorage.getItem('dropzone_duration') || '7d',
     };
 }
 let config = {};
 loadConfig();
+
+function clearStoredOAuthState() {
+    localStorage.removeItem('dropzone_access_token');
+    localStorage.removeItem('dropzone_owner');
+}
+
+function isRecoverableOAuthBootstrapError(err) {
+    const message = String(err?.message || '').toLowerCase();
+    return message.includes('missing authentication credentials')
+        || message.includes('missing bearer token')
+        || message.includes('invalid bearer token')
+        || message.includes('auth required');
+}
 
 let onboardingScreen, mainScreen, dropArea, statusText;
 let recentFilesCache = [];
@@ -983,10 +1005,15 @@ async function init() {
             }
         } catch (err) {
             console.error('OAuth device readiness failed:', err);
-            await showModal({
-                title: 'OAuth setup failed',
-                message: err?.message || 'Could not initialize trusted device state for OAuth login.',
-            });
+            if (isRecoverableOAuthBootstrapError(err)) {
+                clearStoredOAuthState();
+                loadConfig();
+            } else {
+                await showModal({
+                    title: 'OAuth setup failed',
+                    message: err?.message || 'Could not initialize trusted device state for OAuth login.',
+                });
+            }
             showOnboarding();
         }
     } else if (config.apiKey && config.serverUrl) {
