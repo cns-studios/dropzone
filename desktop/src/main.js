@@ -15,7 +15,7 @@ import {
     uploadStatus,
     verifyDesktopKey,
 } from './lib/desktopApi.js';
-import { beginLoopbackOAuth, waitForLoopbackOAuth } from './lib/oauth.js';
+import { beginLoopbackOAuth, waitForLoopbackOAuth, verifyLoopbackToken } from './lib/oauth.js';
 
 let appWindow = null;
 let listen = null;
@@ -43,7 +43,7 @@ const pressedKeys = new Set();
 const UPDATE_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const LAST_NOTIFIED_VERSION_KEY = 'dropzone_last_notified_update';
 
-const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
+const CHUNK_SIZE = 2 * 1024 * 1024; 
 
 const DURATIONS = [
     { value: '24h', label: '24 hours' },
@@ -1081,16 +1081,18 @@ async function init() {
             const sessionId = await beginLoopbackOAuth(url, tauriInvoke);
             oauthBtn.textContent = 'Waiting for login...';
             const result = await waitForLoopbackOAuth(tauriInvoke, sessionId);
+            const verified = await verifyLoopbackToken(tauriInvoke, url, result.access_token);
+            const ownerName = verified?.cns_user?.username || verified?.owner || 'Authenticated User';
 
             localStorage.setItem('dropzone_access_token', result.access_token);
             localStorage.removeItem('dropzone_key');
             localStorage.setItem('dropzone_url', url);
-            localStorage.setItem('dropzone_owner', 'Authenticated User');
+            localStorage.setItem('dropzone_owner', ownerName);
 
             config.accessToken = result.access_token;
             config.apiKey = null;
             config.serverUrl = url;
-            config.ownerName = 'Authenticated User';
+            config.ownerName = ownerName;
 
             const ready = await ensureOAuthDeviceReady();
             if (ready) {
@@ -1496,8 +1498,11 @@ function connectDesktopSocket() {
         try {
             const payload = JSON.parse(event.data);
             if (payload?.type === 'new_file') {
+                if (payload?.source_device_id && payload.source_device_id === getOrCreateApproverDeviceId()) {
+                    loadRecentFiles();
+                    return;
+                }
                 loadRecentFiles();
-                showToast('New upload available in your list.');
             }
         } catch (_) {
         }
@@ -1759,11 +1764,12 @@ async function uploadFiles(paths) {
                 const start  = ci * CHUNK_SIZE;
                 const end    = Math.min(start + CHUNK_SIZE, totalSize);
                 const chunk  = fileBytes.slice(start, end);
+                const chunkBytes = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
 
                 const form = new FormData();
                 form.append('session_id',  session_id);
                 form.append('chunk_index', String(ci));
-                form.append('chunk',       new Blob([chunk]), 'chunk');
+                form.append('chunk',       new File([chunkBytes], 'chunk', { type: 'application/octet-stream' }));
 
                 const chunkRes = await uploadChunk(config, form);
                 if (!chunkRes.ok) throw new Error('Chunk upload failed at index ' + ci);
@@ -1802,7 +1808,7 @@ async function uploadFiles(paths) {
 }
 
 async function pollAssemblyStatus(sessionID) {
-    const maxAttempts = 60; // 30s max
+    const maxAttempts = 60; 
     for (let i = 0; i < maxAttempts; i++) {
         await new Promise(r => setTimeout(r, 500));
         try {

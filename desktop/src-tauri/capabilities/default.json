@@ -14,6 +14,14 @@
     "fs:allow-write-file",
     "fs:allow-exists",
     "http:default",
+    {
+      "identifier": "http:allow-fetch",
+      "allow": [
+        "https://shareit.cns-studios.com",
+        "http://localhost:*",
+        "http://127.0.0.1:*"
+      ]
+    },
     "opener:default",
     "shell:default",
     "shell:allow-open"
