@@ -129,6 +129,28 @@ const ENC_SALT_LEN = 16;
 const ENC_IV_LEN = 12;
 const ENC_PBKDF2_ITERS = 100000;
 
+function randomBytes(length) {
+    const bytes = new Uint8Array(length);
+    crypto.getRandomValues(bytes);
+    return bytes;
+}
+
+function concatBytes(...parts) {
+    const total = parts.reduce((sum, part) => sum + (part?.byteLength || 0), 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const part of parts) {
+        if (!part) continue;
+        out.set(part, offset);
+        offset += part.byteLength;
+    }
+    return out;
+}
+
+function generateUploadPassphrase() {
+    return toBase64(randomBytes(24)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
 function toBase64(data) {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
     let binary = '';
@@ -216,7 +238,7 @@ function setDownloadActivity(active, options = {}) {
     value.textContent = `${pct}%`;
 }
 
-async function derivePassphraseKey(passphrase, salt) {
+async function derivePassphraseKey(passphrase, salt, keyUsages = ['decrypt']) {
     const keyMaterial = await crypto.subtle.importKey(
         'raw',
         new TextEncoder().encode(passphrase),
@@ -238,8 +260,77 @@ async function derivePassphraseKey(passphrase, salt) {
             length: 256,
         },
         false,
+        keyUsages
+    );
+}
+
+async function encryptBytesWithPassphrase(bytes, passphrase) {
+    const raw = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const salt = randomBytes(ENC_SALT_LEN);
+    const iv = randomBytes(ENC_IV_LEN);
+    const key = await derivePassphraseKey(passphrase, salt, ['encrypt']);
+    const ciphertext = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        raw
+    );
+    return concatBytes(salt, iv, new Uint8Array(ciphertext));
+}
+
+async function wrapSecretWithUserKey(secretBytes, userKeyRaw) {
+    const iv = randomBytes(12);
+    const userKey = await crypto.subtle.importKey(
+        'raw',
+        userKeyRaw,
+        { name: 'AES-GCM' },
+        false,
+        ['encrypt']
+    );
+    const wrapped = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        userKey,
+        secretBytes
+    );
+    return {
+        wrapped: new Uint8Array(wrapped),
+        nonce: iv,
+    };
+}
+
+async function resolveOAuthUserKeyRaw() {
+    const cached = getStoredUserKeyRaw();
+    if (cached) {
+        return cached;
+    }
+
+    const deviceID = getOrCreateApproverDeviceId();
+    const registration = await registerOAuthDevice(deviceID);
+    if (registration?.needs_enrollment) {
+        throw new Error('Device approval is required before encrypted uploads can be finalized.');
+    }
+
+    const wrappedUKB64 = registration?.user_key_envelope?.wrapped_uk_b64;
+    if (!wrappedUKB64) {
+        throw new Error('Missing user key envelope for this device.');
+    }
+
+    const identity = await getOrCreateDeviceIdentity();
+    const privateKey = await crypto.subtle.importKey(
+        'jwk',
+        identity.privateKeyJWK,
+        { name: 'RSA-OAEP', hash: 'SHA-256' },
+        false,
         ['decrypt']
     );
+    const unwrapped = await crypto.subtle.decrypt(
+        { name: 'RSA-OAEP' },
+        privateKey,
+        fromBase64(wrappedUKB64)
+    );
+
+    const userKeyRaw = new Uint8Array(unwrapped);
+    setStoredUserKeyRaw(userKeyRaw);
+    return userKeyRaw;
 }
 
 async function decryptEncryptedBytes(bytes, passphrase) {
@@ -2013,7 +2104,23 @@ async function uploadFiles(paths) {
 
         try {
             const fileBytes  = await fs.readFile(path);
-            const totalSize  = fileBytes.byteLength;
+            let uploadBytes = fileBytes;
+            let wrappedDekB64 = '';
+            let dekWrapNonceB64 = '';
+
+            if (config.accessToken) {
+                if (statusText) statusText.innerText = `Encrypting ${fileName}…`;
+                const passphrase = generateUploadPassphrase();
+                const encryptedBytes = await encryptBytesWithPassphrase(fileBytes, passphrase);
+                uploadBytes = encryptedBytes;
+
+                const userKeyRaw = await resolveOAuthUserKeyRaw();
+                const wrapped = await wrapSecretWithUserKey(new TextEncoder().encode(passphrase), userKeyRaw);
+                wrappedDekB64 = toBase64(wrapped.wrapped);
+                dekWrapNonceB64 = toBase64(wrapped.nonce);
+            }
+
+            const totalSize  = uploadBytes.byteLength;
             const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
 
             if (statusText) statusText.innerText = `Uploading ${fileName}…`;
@@ -2030,7 +2137,7 @@ async function uploadFiles(paths) {
             for (let ci = 0; ci < totalChunks; ci++) {
                 const start  = ci * CHUNK_SIZE;
                 const end    = Math.min(start + CHUNK_SIZE, totalSize);
-                const chunk  = fileBytes.slice(start, end);
+                const chunk  = uploadBytes.slice(start, end);
                 const chunkBytes = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
 
                 const form = new FormData();
@@ -2055,6 +2162,10 @@ async function uploadFiles(paths) {
             const finalizePayload = { session_id, duration: config.duration };
             if (config.accessToken) {
                 finalizePayload.device_id = getOrCreateApproverDeviceId();
+                finalizePayload.wrapped_dek_b64 = wrappedDekB64;
+                finalizePayload.dek_wrap_alg = 'AES-GCM-UK-v1';
+                finalizePayload.dek_wrap_nonce_b64 = dekWrapNonceB64;
+                finalizePayload.dek_wrap_version = 1;
             }
             const finalRes = await uploadFinalize(config, finalizePayload);
             if (!finalRes.ok) throw new Error('Finalize failed');
