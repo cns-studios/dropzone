@@ -79,8 +79,28 @@ function clearStoredOAuthState() {
     localStorage.removeItem('dropzone_owner');
 }
 
+function oauthErrorMessage(err) {
+    const candidates = [
+        err?.message,
+        err?.error,
+        err?.code,
+        err?.details,
+        err?.statusText,
+    ];
+
+    if (err && typeof err === 'object') {
+        const json = JSON.stringify(err);
+        if (json) candidates.push(json);
+    }
+
+    return candidates
+        .filter(Boolean)
+        .map((v) => String(v).toLowerCase())
+        .join(' ');
+}
+
 function isRecoverableOAuthBootstrapError(err) {
-    const message = String(err?.message || '').toLowerCase();
+    const message = oauthErrorMessage(err);
     return message.includes('missing authentication credentials')
     || message.includes('mismatch')
         || message.includes('missing bearer token')
@@ -90,6 +110,16 @@ function isRecoverableOAuthBootstrapError(err) {
     || message.includes('missing_auth')
     || message.includes('approver device is not trusted')
     || message.includes('device_not_trusted')
+        || message.includes('unauthorized')
+        || message.includes('forbidden')
+        || message.includes('401')
+        || message.includes('403')
+        || message.includes('invalid access token')
+        || message.includes('access token expired')
+        || message.includes('token expired')
+        || message.includes('session expired')
+        || message.includes('invalid credentials')
+        || message.includes('login expired')
         || message.includes('load failed')
         || message.includes('failed to fetch')
         || message.includes('networkerror');
@@ -114,6 +144,10 @@ function resetOAuthToOnboarding(message) {
     if (message) {
         showToast(message);
     }
+}
+
+function resetOAuthToOnboardingSilently() {
+    resetOAuthToOnboarding('');
 }
 
 function handleOAuthSessionInvalidation() {
@@ -851,7 +885,7 @@ async function checkOAuthApprovalStatus() {
         return false;
     } catch (err) {
         if (isRecoverableOAuthBootstrapError(err)) {
-            handleOAuthSessionInvalidation();
+            resetOAuthToOnboardingSilently();
             return false;
         }
         setApprovalWaitStatus(err?.message || 'Approval check failed', true);
@@ -873,16 +907,21 @@ async function ensureOAuthDeviceReady() {
         registration = await registerOAuthDevice(deviceID);
     } catch (err) {
         if (isRecoverableOAuthBootstrapError(err)) {
-            handleOAuthSessionInvalidation();
+            resetOAuthToOnboardingSilently();
             return false;
         }
-        showApprovalWaitScreen({
-            deviceID,
-            enrollmentID: '',
-            verificationCode: 'pending',
-        });
-        setApprovalWaitStatus(err?.message || 'Waiting for server/device approval endpoint.', true);
-        startApprovalPolling();
+        if (isConnectivityOAuthError(err)) {
+            showApprovalWaitScreen({
+                deviceID,
+                enrollmentID: '',
+                verificationCode: 'pending',
+            });
+            setApprovalWaitStatus('Waiting for server/device approval endpoint.', true);
+            startApprovalPolling();
+            return false;
+        }
+
+        resetOAuthToOnboardingSilently();
         return false;
     }
 
@@ -897,16 +936,21 @@ async function ensureOAuthDeviceReady() {
         enrollment = await ensureEnrollmentForDevice(deviceID);
     } catch (err) {
         if (isRecoverableOAuthBootstrapError(err)) {
-            handleOAuthSessionInvalidation();
+            resetOAuthToOnboardingSilently();
             return false;
         }
-        showApprovalWaitScreen({
-            deviceID,
-            enrollmentID: '',
-            verificationCode: 'pending',
-        });
-        setApprovalWaitStatus(err?.message || 'Could not create enrollment yet.', true);
-        startApprovalPolling();
+        if (isConnectivityOAuthError(err)) {
+            showApprovalWaitScreen({
+                deviceID,
+                enrollmentID: '',
+                verificationCode: 'pending',
+            });
+            setApprovalWaitStatus('Waiting for server/device approval endpoint.', true);
+            startApprovalPolling();
+            return false;
+        }
+
+        resetOAuthToOnboardingSilently();
         return false;
     }
 
@@ -1952,9 +1996,12 @@ function connectEnrollmentSocket() {
             const payload = JSON.parse(event.data);
             const eventType = payload?.type || '';
             const requestDeviceId = payload?.request_device?.id || payload?.enrollment?.request_device_id || '';
+            const approverDeviceId = payload?.approver_device_id || '';
             const currentDeviceId = getOrCreateApproverDeviceId();
 
-            if (eventType === 'device_enrollment_approved' && requestDeviceId && requestDeviceId !== currentDeviceId) {
+            const isApproverDevice = !!(approverDeviceId && currentDeviceId === approverDeviceId);
+
+            if (eventType === 'device_enrollment_approved' && requestDeviceId && requestDeviceId !== currentDeviceId && !isApproverDevice) {
                 const deviceName = payload?.request_device?.device_label || requestDeviceId;
                 showToast(`Another device approved ${deviceName}.`);
             }
