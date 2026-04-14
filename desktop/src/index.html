@@ -14,6 +14,20 @@
         </div>
 
         <div id="onboarding" class="screen">
+            <div class="titlebar">
+                <div class="titlebar-inner">
+                    <span style="font-size:14px;font-weight:700;color:var(--text);">Dropzone</span>
+                    <div class="topbar-right">
+                        <div class="icon-btn" id="btn-window-minimize-onboarding" title="Minimize">
+                            <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+                        </div>
+                        <div class="icon-btn" id="btn-window-close-onboarding" title="Close">
+                            <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="ob-icon-wrap">
                 <svg viewBox="0 0 24 24"><path d="M12 3v11M12 14l-4-4M12 14l4-4"/><path d="M5 19h14"/></svg>
             </div>
@@ -66,6 +80,20 @@
         </div>
 
         <div id="approval-wait" class="screen hidden">
+            <div class="titlebar">
+                <div class="titlebar-inner">
+                    <span style="font-size:14px;font-weight:700;color:var(--text);">Dropzone</span>
+                    <div class="topbar-right">
+                        <div class="icon-btn" id="btn-window-minimize-approval" title="Minimize">
+                            <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+                        </div>
+                        <div class="icon-btn" id="btn-window-close-approval" title="Close">
+                            <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="approval-wrap">
                 <div class="approval-badge">OAuth Device Approval Required</div>
                 <div class="approval-title">Waiting for trusted device approval</div>
@@ -101,6 +129,12 @@
                     <div class="topbar-right">
                         <div class="icon-btn" id="btn-settings" title="Settings">
                             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+                        </div>
+                        <div class="icon-btn" id="btn-window-minimize-main" title="Minimize">
+                            <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+                        </div>
+                        <div class="icon-btn" id="btn-window-close-main" title="Close">
+                            <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
                         </div>
                     </div>
                 </div>
@@ -145,8 +179,14 @@
                 <div class="titlebar-inner">
                     <span style="font-size:14px;font-weight:700;color:var(--text);">Settings</span>
                     <div class="topbar-right">
-                        <div class="icon-btn" id="btn-back">
+                        <div class="icon-btn" id="btn-window-minimize-settings" title="Minimize">
+                            <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+                        </div>
+                        <div class="icon-btn" id="btn-window-close-settings" title="Close">
                             <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                        </div>
+                        <div class="icon-btn" id="btn-back">
+                            <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
                         </div>
                     </div>
                 </div>
@@ -189,33 +229,6 @@
                     </div>
                 </div>
 
-                <div class="settings-group">
-                    <div class="settings-group-label">Device Enrollments</div>
-                    <div class="settings-card tools-card">
-                        <div class="tool-row">
-                            <span class="s-key">Approver device ID</span>
-                            <input id="enroll-approver-device-id" class="tool-input" type="text" placeholder="Your trusted device ID" />
-                        </div>
-                        <div class="tool-row">
-                            <span class="s-key">Wrapped user key</span>
-                            <input id="enroll-wrapped-uk" class="tool-input" type="text" placeholder="Base64 wrapped_user_key_b64" />
-                        </div>
-                        <div class="tool-row">
-                            <span class="s-key">Wrap algorithm</span>
-                            <input id="enroll-uk-wrap-alg" class="tool-input" type="text" placeholder="x25519-xsalsa20-poly1305" />
-                        </div>
-                        <div class="tool-row">
-                            <span class="s-key">Wrap metadata (JSON)</span>
-                            <input id="enroll-uk-wrap-meta" class="tool-input" type="text" placeholder='{"version":1}' />
-                        </div>
-                        <div class="tool-row">
-                            <button id="enroll-refresh" class="btn btn-muted enroll-btn">Refresh pending enrollments</button>
-                        </div>
-                        <div id="enroll-result" class="tool-result hidden"></div>
-                        <div id="enroll-pending-list" class="enroll-list"></div>
-                    </div>
-                </div>
-
                 <button id="btn-reset" class="btn-danger">Sign out &amp; reset</button>
             </div>
         </div>
@@ -228,34 +241,9 @@
         <div class="app-modal-backdrop"></div>
         <div class="app-modal-card enrollment-popup-card">
             <div id="enrollment-popup-title" class="app-modal-title">Pending Device Approvals</div>
-            <div class="app-modal-message">Another device requested trust approval. Approve or reject it here.</div>
-
-            <div class="tools-card">
-                <div class="tool-row">
-                    <span class="s-key">Approver device ID</span>
-                    <input id="popup-enroll-approver-device-id" class="tool-input" type="text" placeholder="Your trusted device ID" />
-                </div>
-                <div class="tool-row">
-                    <span class="s-key">Wrapped user key</span>
-                    <input id="popup-enroll-wrapped-uk" class="tool-input" type="text" placeholder="Base64 wrapped_user_key_b64" />
-                </div>
-                <div class="tool-row">
-                    <span class="s-key">Wrap algorithm</span>
-                    <input id="popup-enroll-uk-wrap-alg" class="tool-input" type="text" placeholder="x25519-xsalsa20-poly1305" />
-                </div>
-                <div class="tool-row">
-                    <span class="s-key">Wrap metadata (JSON)</span>
-                    <input id="popup-enroll-uk-wrap-meta" class="tool-input" type="text" placeholder='{"version":1}' />
-                </div>
-                <div id="popup-enroll-result" class="tool-result hidden"></div>
-            </div>
+            <div class="app-modal-message">A new device from your CNS account wants to view your files. If you did not ask for this, decline and change your CNS password.</div>
 
             <div id="popup-enroll-pending-list" class="enroll-list"></div>
-
-            <div class="app-modal-actions">
-                <button id="popup-enroll-refresh" class="btn app-modal-btn app-modal-btn-secondary">Refresh</button>
-                <button id="popup-enroll-close" class="btn app-modal-btn app-modal-btn-primary">Close</button>
-            </div>
         </div>
     </div>
 

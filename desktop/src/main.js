@@ -116,6 +116,10 @@ function resetOAuthToOnboarding(message) {
     }
 }
 
+function handleOAuthSessionInvalidation() {
+    resetOAuthToOnboarding('Logged out, please sign in again');
+}
+
 let onboardingScreen, mainScreen, dropArea, statusText;
 let recentFilesCache = [];
 let recentSearchQuery = '';
@@ -295,6 +299,22 @@ async function wrapSecretWithUserKey(secretBytes, userKeyRaw) {
         wrapped: new Uint8Array(wrapped),
         nonce: iv,
     };
+}
+
+async function wrapUserKeyForRequestDevice(userKeyRaw, requestPublicKeyJWK) {
+    const requestPublicKey = await crypto.subtle.importKey(
+        'jwk',
+        requestPublicKeyJWK,
+        { name: 'RSA-OAEP', hash: 'SHA-256' },
+        false,
+        ['encrypt']
+    );
+    const wrapped = await crypto.subtle.encrypt(
+        { name: 'RSA-OAEP' },
+        requestPublicKey,
+        userKeyRaw
+    );
+    return new Uint8Array(wrapped);
 }
 
 async function resolveOAuthUserKeyRaw() {
@@ -831,7 +851,7 @@ async function checkOAuthApprovalStatus() {
         return false;
     } catch (err) {
         if (isRecoverableOAuthBootstrapError(err)) {
-            resetOAuthToOnboarding('OAuth session expired or is invalid. Please sign in again.');
+            handleOAuthSessionInvalidation();
             return false;
         }
         setApprovalWaitStatus(err?.message || 'Approval check failed', true);
@@ -853,10 +873,7 @@ async function ensureOAuthDeviceReady() {
         registration = await registerOAuthDevice(deviceID);
     } catch (err) {
         if (isRecoverableOAuthBootstrapError(err)) {
-            clearStoredOAuthState();
-            loadConfig();
-            hideApprovalWaitScreen();
-            showOnboarding();
+            handleOAuthSessionInvalidation();
             return false;
         }
         showApprovalWaitScreen({
@@ -880,10 +897,7 @@ async function ensureOAuthDeviceReady() {
         enrollment = await ensureEnrollmentForDevice(deviceID);
     } catch (err) {
         if (isRecoverableOAuthBootstrapError(err)) {
-            clearStoredOAuthState();
-            loadConfig();
-            hideApprovalWaitScreen();
-            showOnboarding();
+            handleOAuthSessionInvalidation();
             return false;
         }
         showApprovalWaitScreen({
@@ -905,36 +919,70 @@ async function ensureOAuthDeviceReady() {
     return false;
 }
 
-function readEnrollmentApprovalInputs(prefix) {
-    const approverInput = document.getElementById(`${prefix}-approver-device-id`);
-    const wrappedUkInput = document.getElementById(`${prefix}-wrapped-uk`);
-    const wrapAlgInput = document.getElementById(`${prefix}-uk-wrap-alg`);
-    const wrapMetaInput = document.getElementById(`${prefix}-uk-wrap-meta`);
-
-    const approverDeviceID = (approverInput?.value || '').trim();
-    const wrappedUserKeyB64 = (wrappedUkInput?.value || '').trim();
-    const ukWrapAlg = (wrapAlgInput?.value || '').trim();
-    const ukWrapMetaRaw = (wrapMetaInput?.value || '').trim();
-
-    if (!approverDeviceID) return { error: 'Approver device ID is required.' };
-    if (!wrappedUserKeyB64) return { error: 'Wrapped user key is required.' };
-    if (!ukWrapAlg) return { error: 'Wrap algorithm is required.' };
-
-    let ukWrapMeta = {};
-    if (ukWrapMetaRaw) {
-        try {
-            ukWrapMeta = JSON.parse(ukWrapMetaRaw);
-        } catch (_) {
-            return { error: 'Wrap metadata must be valid JSON.' };
-        }
-    }
-
-    return {
-        approverDeviceID,
-        wrappedUserKeyB64,
-        ukWrapAlg,
-        ukWrapMeta,
+function bindWindowControlButtons() {
+    const bind = (id, handler) => {
+        const button = document.getElementById(id);
+        if (!button || button.dataset.bound) return;
+        button.dataset.bound = '1';
+        button.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            try {
+                await handler();
+            } catch (err) {
+                console.warn('Window action failed:', err);
+            }
+        });
     };
+
+    bind('btn-window-minimize-main', async () => {
+        if (appWindow?.minimize) {
+            await appWindow.minimize();
+        }
+    });
+    bind('btn-window-minimize-onboarding', async () => {
+        if (appWindow?.minimize) {
+            await appWindow.minimize();
+        }
+    });
+    bind('btn-window-minimize-approval', async () => {
+        if (appWindow?.minimize) {
+            await appWindow.minimize();
+        }
+    });
+    bind('btn-window-minimize-settings', async () => {
+        if (appWindow?.minimize) {
+            await appWindow.minimize();
+        }
+    });
+    bind('btn-window-close-main', async () => {
+        if (appWindow?.hide) {
+            await appWindow.hide();
+            return;
+        }
+        window.close();
+    });
+    bind('btn-window-close-onboarding', async () => {
+        if (appWindow?.hide) {
+            await appWindow.hide();
+            return;
+        }
+        window.close();
+    });
+    bind('btn-window-close-approval', async () => {
+        if (appWindow?.hide) {
+            await appWindow.hide();
+            return;
+        }
+        window.close();
+    });
+    bind('btn-window-close-settings', async () => {
+        if (appWindow?.hide) {
+            await appWindow.hide();
+            return;
+        }
+        window.close();
+    });
 }
 
 function renderEnrollmentPopup() {
@@ -981,16 +1029,20 @@ function renderEnrollmentPopup() {
 
         row.querySelector('.enroll-action-approve')?.addEventListener('click', async () => {
             if (!enrollmentId) {
-                setPopupEnrollmentResult('Enrollment ID is missing.', true);
-                return;
-            }
-            const input = readEnrollmentApprovalInputs('popup-enroll');
-            if (input.error) {
-                setPopupEnrollmentResult(input.error, true);
+                showToast('Enrollment ID is missing.');
                 return;
             }
 
             try {
+                const requestPublicKeyJWK = requestDevice?.public_key_jwk;
+                if (!requestPublicKeyJWK) {
+                    throw new Error('Request device public key is missing.');
+                }
+
+                const approverDeviceID = getOrCreateApproverDeviceId();
+                const userKeyRaw = await resolveOAuthUserKeyRaw();
+                const wrappedUserKey = await wrapUserKeyForRequestDevice(userKeyRaw, requestPublicKeyJWK);
+
                 await tauriInvoke('desktop_device_api', {
                     request: {
                         server_url: config.serverUrl,
@@ -998,34 +1050,34 @@ function renderEnrollmentPopup() {
                         method: 'POST',
                         path: `/desktop/me/devices/enrollments/${encodeURIComponent(enrollmentId)}/approve`,
                         body: {
-                            approver_device_id: input.approverDeviceID,
+                            approver_device_id: approverDeviceID,
                             verification_code: verificationCode,
-                            wrapped_user_key_b64: input.wrappedUserKeyB64,
-                            uk_wrap_alg: input.ukWrapAlg,
-                            uk_wrap_meta: input.ukWrapMeta,
+                            wrapped_user_key_b64: toBase64(wrappedUserKey),
+                            uk_wrap_alg: 'RSA-OAEP-2048-v1',
+                            uk_wrap_meta: {
+                                type: 'enrollment-approval',
+                                approver_device_id: approverDeviceID,
+                                request_device_id: requestDevice?.id || enrollment.request_device_id,
+                            },
                         },
                     },
                 });
-                setPopupEnrollmentResult('Enrollment approved.');
+                showToast('Enrollment approved.');
                 await refreshPendingEnrollments();
             } catch (err) {
                 console.error('Approve enrollment failed:', err);
-                setPopupEnrollmentResult('Failed to approve enrollment.', true);
+                showToast(err?.message || 'Failed to approve enrollment.');
             }
         });
 
         row.querySelector('.enroll-action-reject')?.addEventListener('click', async () => {
             if (!enrollmentId) {
-                setPopupEnrollmentResult('Enrollment ID is missing.', true);
-                return;
-            }
-            const input = readEnrollmentApprovalInputs('popup-enroll');
-            if (input.error) {
-                setPopupEnrollmentResult(input.error, true);
+                showToast('Enrollment ID is missing.');
                 return;
             }
 
             try {
+                const approverDeviceID = getOrCreateApproverDeviceId();
                 await tauriInvoke('desktop_device_api', {
                     request: {
                         server_url: config.serverUrl,
@@ -1033,15 +1085,15 @@ function renderEnrollmentPopup() {
                         method: 'POST',
                         path: `/desktop/me/devices/enrollments/${encodeURIComponent(enrollmentId)}/reject`,
                         body: {
-                            approver_device_id: input.approverDeviceID,
+                            approver_device_id: approverDeviceID,
                         },
                     },
                 });
-                setPopupEnrollmentResult('Enrollment rejected.');
+                showToast('Enrollment rejected.');
                 await refreshPendingEnrollments();
             } catch (err) {
                 console.error('Reject enrollment failed:', err);
-                setPopupEnrollmentResult('Failed to reject enrollment.', true);
+                showToast(err?.message || 'Failed to reject enrollment.');
             }
         });
 
@@ -1357,12 +1409,11 @@ async function init() {
     setInitialBootLoading(true);
 
     bindModalEvents();
+    bindWindowControlButtons();
 
     const oauthBtn = document.getElementById('btn-oauth');
     const approvalRefreshBtn = document.getElementById('btn-approval-refresh');
     const approvalSignoutBtn = document.getElementById('btn-approval-signout');
-    const popupCloseBtn = document.getElementById('popup-enroll-close');
-    const popupRefreshBtn = document.getElementById('popup-enroll-refresh');
 
     approvalRefreshBtn?.addEventListener('click', () => checkOAuthApprovalStatus());
     approvalSignoutBtn?.addEventListener('click', () => {
@@ -1372,13 +1423,6 @@ async function init() {
         localStorage.clear();
         window.location.reload();
     });
-
-    popupCloseBtn?.addEventListener('click', () => {
-        document.getElementById('enrollment-popup')?.classList.add('hidden');
-        enrollmentPopupOpen = false;
-    });
-
-    popupRefreshBtn?.addEventListener('click', refreshPendingEnrollments);
 
     document.getElementById('btn-save').addEventListener('click', async () => {
         const key = document.getElementById('api-key').value.trim();
@@ -1903,7 +1947,20 @@ function connectEnrollmentSocket() {
         return;
     }
 
-    enrollmentSocket.onmessage = () => {
+    enrollmentSocket.onmessage = (event) => {
+        try {
+            const payload = JSON.parse(event.data);
+            const eventType = payload?.type || '';
+            const requestDeviceId = payload?.request_device?.id || payload?.enrollment?.request_device_id || '';
+            const currentDeviceId = getOrCreateApproverDeviceId();
+
+            if (eventType === 'device_enrollment_approved' && requestDeviceId && requestDeviceId !== currentDeviceId) {
+                const deviceName = payload?.request_device?.device_label || requestDeviceId;
+                showToast(`Another device approved ${deviceName}.`);
+            }
+        } catch (_) {
+        }
+
         refreshPendingEnrollments();
     };
 
@@ -1998,18 +2055,8 @@ function showSettings() {
         popupWrapMetaInput.value = defaultWrapMetaValue();
     }
 
-    const refreshEnrollmentsButton = document.getElementById('enroll-refresh');
-    if (refreshEnrollmentsButton && !refreshEnrollmentsButton.dataset.bound) {
-        refreshEnrollmentsButton.dataset.bound = '1';
-        refreshEnrollmentsButton.addEventListener('click', refreshPendingEnrollments);
-    }
-
     if (config.accessToken) {
         refreshPendingEnrollments();
-    } else {
-        pendingEnrollmentsCache = [];
-        renderPendingEnrollments();
-        setEnrollmentResult('Sign in with OAuth to manage device enrollments.', true);
     }
 
     renderUpdaterUi();
