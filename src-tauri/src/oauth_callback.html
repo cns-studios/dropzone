@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dropzone OAuth Callback</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&family=Lora:ital,wght@0,400;0,500;1,400&display=swap');
+
+        :root {
+            --bg:#f5f2ee;
+            --window:#fdfcfa;
+            --surface:#f0ece6;
+            --surface2:#e8e2d9;
+            --border:#e2dbd0;
+            --text:#2c2825;
+            --dim:#8a8078;
+            --accent:#c97d4e;
+            --accent-light:#f5ebe0;
+            --accent-mid:#e8c4a0;
+            --green:#5a9e72;
+            --green-light:#e8f4ed;
+            --shadow:0 8px 32px rgba(44,40,37,0.10),0 2px 8px rgba(44,40,37,0.06);
+            --shadow-sm:0 2px 8px rgba(44,40,37,0.07);
+            --sans:'Nunito',sans-serif;
+            --serif:'Lora',serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body {
+            min-height: 100%;
+        }
+
+        body {
+            font-family: var(--sans);
+            color: var(--text);
+            background: var(--bg);
+            background-image:
+                radial-gradient(ellipse at 20% 20%, rgba(201,125,78,0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(90,158,114,0.05) 0%, transparent 50%);
+            display: grid;
+            place-items: center;
+            padding: 20px;
+            overflow: hidden;
+        }
+
+        .grid-line {
+            position: fixed;
+            background: var(--border);
+            opacity: 0.42;
+            z-index: -1;
+        }
+
+        .v-line {
+            width: 1px;
+            height: 100vh;
+            top: 0;
+        }
+
+        .h-line {
+            width: 100vw;
+            height: 1px;
+            left: 0;
+        }
+
+        .card {
+            width: min(560px, 100%);
+            background: var(--window);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            animation: reveal 0.3s ease;
+            overflow: hidden;
+        }
+
+        .card-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border);
+            background: var(--window);
+        }
+
+        .kicker {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border-radius: 999px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            padding: 5px 9px;
+            font-size: 11px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--dim);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: __DOT_COLOR__;
+            border-radius: 50%;
+            box-shadow: 0 0 0 3px color-mix(in srgb, __DOT_COLOR__ 22%, #ffffff);
+        }
+
+        .card-body {
+            padding: 24px 22px 18px;
+        }
+
+        h1 {
+            font-family: var(--serif);
+            font-size: 31px;
+            font-weight: 500;
+            line-height: 1.22;
+            letter-spacing: -0.01em;
+            margin-bottom: 8px;
+        }
+
+        .message {
+            font-size: 14px;
+            color: var(--dim);
+            line-height: 1.6;
+        }
+
+        .meta {
+            margin-top: 16px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            border-radius: 10px;
+            padding: 12px;
+            display: grid;
+            gap: 6px;
+        }
+
+        .brand {
+            margin-top: 12px;
+            font-size: 11.5px;
+            font-weight: 700;
+            color: var(--dim);
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+
+        @keyframes reveal {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (max-width: 640px) {
+            body {
+                padding: 1rem;
+            }
+
+            .card-head {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .card-body {
+                padding: 18px 14px 14px;
+            }
+
+            h1 {
+                font-size: 25px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="grid-line v-line" style="left: 8%;" aria-hidden="true"></div>
+    <div class="grid-line v-line" style="left: 50%;" aria-hidden="true"></div>
+    <div class="grid-line v-line" style="left: 92%;" aria-hidden="true"></div>
+    <div class="grid-line h-line" style="top: 18%;" aria-hidden="true"></div>
+    <div class="grid-line h-line" style="top: 82%;" aria-hidden="true"></div>
+
+    <main class="card" role="status" aria-live="polite" aria-atomic="true">
+        <div class="card-head">
+            <div class="kicker">Dropzone</div>
+            <div class="status-pill">
+                <span class="status-dot" aria-hidden="true"></span>
+                __STATUS_LABEL__
+            </div>
+        </div>
+
+        <div class="card-body">
+            <h1>__TITLE__</h1>
+            <p class="message">__MESSAGE__</p>
+
+            <p class="message" style="margin-top: 16px;">You can close this tab and return to Dropzone.</p>
+
+            <div class="brand">Dropzone Desktop</div>
+        </div>
+    </main>
+</body>
+</html>

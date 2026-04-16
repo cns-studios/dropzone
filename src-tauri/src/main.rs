@@ -32,6 +32,7 @@ const GITHUB_API_ACCEPT: &str = "application/vnd.github+json";
 const HTTP_USER_AGENT: &str = "Dropzone-Updater/1.0";
 const OAUTH_LOOPBACK_REDIRECT: &str = "http://127.0.0.1:43873/callback";
 const OAUTH_CALLBACK_TIMEOUT_SECS: u64 = 240;
+const OAUTH_CALLBACK_TEMPLATE: &str = include_str!("oauth_callback.html");
 
 #[derive(Debug, Deserialize)]
 struct DesktopOAuthConfig {
@@ -272,12 +273,33 @@ fn parse_callback_query(request_data: &str) -> Option<HashMap<String, String>> {
     Some(result)
 }
 
+fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn render_loopback_body(ok: bool, message: &str) -> String {
+    let status_label = if ok { "Login completed" } else { "Login failed" };
+    let title = if ok {
+        "You are signed in"
+    } else {
+        "We could not complete sign in"
+    };
+    let dot_color = if ok { "#2de19e" } else { "#ff6868" };
+
+    OAUTH_CALLBACK_TEMPLATE
+        .replace("__STATUS_LABEL__", status_label)
+        .replace("__TITLE__", title)
+        .replace("__MESSAGE__", &escape_html(message))
+        .replace("__DOT_COLOR__", dot_color)
+}
+
 fn serve_loopback_response(stream: &mut std::net::TcpStream, ok: bool, message: &str) {
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Dropzone OAuth</title></head><body><h3>{}</h3><p>{}</p><p>You can close this window and return to Dropzone.</p></body></html>",
-        if ok { "Login completed" } else { "Login failed" },
-        message
-    );
+    let body = render_loopback_body(ok, message);
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
