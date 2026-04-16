@@ -131,11 +131,12 @@ jobs:
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          if gh release view nightly >/dev/null 2>&1; then
-            gh release delete nightly --cleanup-tag --yes
+          if gh release view nightly -R "$GH_REPO" >/dev/null 2>&1; then
+            gh release delete nightly -R "$GH_REPO" --cleanup-tag --yes
           fi
 
           mapfile -t files < <(find artifacts -type f)
@@ -144,7 +145,7 @@ jobs:
             exit 1
           fi
 
-          gh release create nightly "${files[@]}" \
+          gh release create nightly -R "$GH_REPO" "${files[@]}" \
             --title "Nightly Build" \
             --notes "Automated nightly build from ${GITHUB_SHA} on $(date -u +'%Y-%m-%d %H:%M UTC')." \
             --prerelease
