@@ -1,14 +1,19 @@
 import { getTauriApi, httpRequest } from './lib/http.js';
 import {
     approveEnrollment,
+    confirmTunnel,
     createEnrollment,
     downloadDesktopFile,
+    endTunnel,
     getFileAccess,
+    getTunnel,
+    joinTunnel,
     listPendingEnrollments,
     listRecentUploads,
     listDesktopFiles,
     registerDevice,
     rejectEnrollment,
+    startTunnel,
     uploadChunk,
     uploadComplete,
     uploadFinalize,
@@ -39,6 +44,10 @@ let enrollmentSocketRetryTimer = null;
 let approvalPollTimer = null;
 let approvalWaitState = null;
 let enrollmentPopupOpen = false;
+let activeTunnel = null;
+let tunnelFilesCache = [];
+let tunnelPollTimer = null;
+let tunnelMode = null;
 const pressedKeys = new Set();
 
 const UPDATE_INTERVAL_MS = 3 * 60 * 60 * 1000;
@@ -739,6 +748,253 @@ function renderRecentFiles() {
 
         list.appendChild(item);
     });
+}
+
+function renderTunnelFiles() {
+    const list = document.getElementById('tunnel-file-list');
+    const empty = document.getElementById('tunnel-empty');
+    const count = document.getElementById('tunnel-count');
+    if (!list || !empty || !count) return;
+
+    count.textContent = `${tunnelFilesCache.length} file${tunnelFilesCache.length === 1 ? '' : 's'}`;
+    list.innerHTML = '';
+
+    if (!tunnelFilesCache.length) {
+        empty.classList.remove('hidden');
+        list.classList.add('hidden');
+        return;
+    }
+
+    empty.classList.add('hidden');
+    list.classList.remove('hidden');
+
+    tunnelFilesCache.forEach((item) => {
+        const { bg, color } = getExtStyle(item.filename || '');
+        const ext = getExtLabel(item.filename || '');
+        const size = formatSize(item.size_bytes);
+        const ago = item.created_at ? timeAgo(item.created_at) : '';
+        const meta = [size, ago].filter(Boolean).join(' · ');
+
+        const row = document.createElement('div');
+        row.className = 'file-item';
+        row.innerHTML = `
+            <div class="file-ext" style="background:${bg};color:${color};">${ext}</div>
+            <div class="file-info">
+                <div class="file-name">${item.filename || 'Unnamed file'}</div>
+                <div class="file-meta">${meta}</div>
+            </div>`;
+        list.appendChild(row);
+    });
+}
+
+function setTunnelMode(mode) {
+    tunnelMode = mode;
+    const startPanel = document.getElementById('tunnel-start-panel');
+    const joinPanel = document.getElementById('tunnel-join-panel');
+    const startModeBtn = document.getElementById('btn-tunnel-start-mode');
+    const joinModeBtn = document.getElementById('btn-tunnel-join-mode');
+
+    startPanel?.classList.toggle('hidden', mode !== 'start');
+    joinPanel?.classList.toggle('hidden', mode !== 'join');
+    startModeBtn?.classList.toggle('active', mode === 'start');
+    joinModeBtn?.classList.toggle('active', mode === 'join');
+}
+
+function applyTunnelUi() {
+    const section = document.getElementById('tunnel-section');
+    const endWrap = document.getElementById('tunnel-end-wrap');
+    const meta = document.getElementById('tunnel-meta');
+    const qr = document.getElementById('tunnel-qr');
+    const confirmRow = document.getElementById('tunnel-confirm-row');
+    const isActive = !!activeTunnel?.id;
+
+    section?.classList.toggle('hidden', !isActive);
+    endWrap?.classList.toggle('hidden', !isActive);
+
+    if (!isActive) {
+        if (meta) {
+            meta.classList.add('hidden');
+            meta.textContent = '';
+        }
+        if (qr) {
+            qr.classList.add('hidden');
+            qr.innerHTML = '';
+        }
+        confirmRow?.classList.add('hidden');
+        tunnelFilesCache = [];
+        renderTunnelFiles();
+        setTunnelMode(null);
+        return;
+    }
+
+    const expiresAt = activeTunnel.expires_at ? timeAgo(activeTunnel.expires_at) : 'soon';
+    if (meta) {
+        meta.classList.remove('hidden');
+        meta.textContent = `Tunnel code ${activeTunnel.code} · Status ${activeTunnel.status} · Expires ${expiresAt}`;
+    }
+
+    const waitingConfirm = !activeTunnel.initiator_confirmed || !activeTunnel.peer_confirmed;
+    confirmRow?.classList.toggle('hidden', !waitingConfirm);
+    setTunnelMode(null);
+}
+
+function renderTunnelQR(payload) {
+    const qr = document.getElementById('tunnel-qr');
+    if (!qr) return;
+    qr.innerHTML = '';
+
+    if (!payload || !window.QRCode) {
+        qr.classList.add('hidden');
+        return;
+    }
+
+    new QRCode(qr, {
+        text: payload,
+        width: 176,
+        height: 176,
+        colorDark: '#2c2825',
+        colorLight: '#ffffff',
+    });
+    qr.classList.remove('hidden');
+}
+
+async function refreshTunnelState() {
+    if (!activeTunnel?.id) return;
+
+    try {
+        const detailRes = await getTunnel(config, activeTunnel.id);
+        if (!detailRes.ok) {
+            if (detailRes.status === 404 || detailRes.status === 410) {
+                activeTunnel = null;
+                tunnelFilesCache = [];
+                applyTunnelUi();
+                showToast('Tunnel ended. Shared tunnel files were removed.');
+                return;
+            }
+            return;
+        }
+
+        const payload = await detailRes.json().catch(() => ({}));
+        if (payload?.tunnel) {
+            activeTunnel = payload.tunnel;
+        }
+        tunnelFilesCache = Array.isArray(payload?.files) ? payload.files : [];
+        applyTunnelUi();
+        renderTunnelFiles();
+    } catch (err) {
+        console.error('Tunnel refresh failed:', err);
+    }
+}
+
+function startTunnelPolling() {
+    if (tunnelPollTimer) {
+        clearInterval(tunnelPollTimer);
+    }
+    tunnelPollTimer = setInterval(() => {
+        refreshTunnelState();
+    }, 4000);
+}
+
+function stopTunnelPolling() {
+    if (tunnelPollTimer) {
+        clearInterval(tunnelPollTimer);
+        tunnelPollTimer = null;
+    }
+}
+
+async function handleStartTunnel() {
+    if (!config.accessToken) {
+        showToast('Sign in with CNS account to start a tunnel.');
+        return;
+    }
+
+    const duration = document.getElementById('tunnel-duration')?.value || '1h';
+    const res = await startTunnel(config, {
+        duration,
+        device_id: getOrCreateApproverDeviceId(),
+    });
+    if (!res.ok) {
+        throw new Error(await res.text() || 'Failed to start tunnel');
+    }
+
+    const payload = await res.json();
+    activeTunnel = payload?.tunnel || null;
+    applyTunnelUi();
+    renderTunnelQR(payload?.qr_payload || '');
+    startTunnelPolling();
+    showToast('Tunnel started. Share the code or QR with the peer.');
+
+    if (activeTunnel?.id) {
+        await confirmTunnel(config, activeTunnel.id, { device_id: getOrCreateApproverDeviceId() }).catch(() => {});
+        refreshTunnelState();
+    }
+}
+
+async function handleJoinTunnel() {
+    if (!config.accessToken) {
+        showToast('Sign in with CNS account to join a tunnel.');
+        return;
+    }
+
+    const codeInput = document.getElementById('tunnel-code-input');
+    const code = (codeInput?.value || '').trim();
+    if (!code) {
+        showToast('Enter a tunnel code first.');
+        return;
+    }
+
+    const res = await joinTunnel(config, {
+        code,
+        device_id: getOrCreateApproverDeviceId(),
+    });
+    if (!res.ok) {
+        throw new Error(await res.text() || 'Failed to join tunnel');
+    }
+
+    const payload = await res.json();
+    activeTunnel = payload?.tunnel || null;
+    applyTunnelUi();
+    renderTunnelQR(payload?.qr_payload || '');
+    startTunnelPolling();
+
+    if (activeTunnel?.id) {
+        await confirmTunnel(config, activeTunnel.id, { device_id: getOrCreateApproverDeviceId() });
+        await refreshTunnelState();
+    }
+    showToast('Tunnel joined.');
+}
+
+async function handleConfirmTunnel() {
+    if (!activeTunnel?.id) return;
+    const res = await confirmTunnel(config, activeTunnel.id, { device_id: getOrCreateApproverDeviceId() });
+    if (!res.ok) {
+        throw new Error(await res.text() || 'Failed to confirm tunnel');
+    }
+    await refreshTunnelState();
+    showToast('Tunnel connection confirmed.');
+}
+
+async function handleEndTunnel() {
+    if (!activeTunnel?.id) return;
+
+    const confirmed = await showModal({
+        title: 'End tunnel session?',
+        message: 'Ending this session deletes all tunnel files on both clients immediately.',
+        okText: 'End session',
+        cancelText: 'Cancel',
+    });
+    if (!confirmed) return;
+
+    const res = await endTunnel(config, activeTunnel.id, { device_id: getOrCreateApproverDeviceId() });
+    if (!res.ok) {
+        throw new Error(await res.text() || 'Failed to end tunnel');
+    }
+
+    activeTunnel = null;
+    tunnelFilesCache = [];
+    stopTunnelPolling();
+    applyTunnelUi();
+    showToast('Tunnel ended. Shared tunnel files were deleted.');
 }
 
 function getOrCreateApproverDeviceId() {
@@ -1905,6 +2161,11 @@ async function setupUpdater() {
 
 function showOnboarding() {
     if (!onboardingScreen) return;
+    stopTunnelPolling();
+    activeTunnel = null;
+    tunnelFilesCache = [];
+    tunnelMode = null;
+    applyTunnelUi();
     hideApprovalWaitScreen();
     document.getElementById('enrollment-popup')?.classList.add('hidden');
     enrollmentPopupOpen = false;
@@ -1950,6 +2211,9 @@ function showMain() {
     if (config.accessToken) {
         refreshPendingEnrollments();
     }
+    applyTunnelUi();
+    setTunnelMode(null);
+    document.getElementById('tunnel-controls')?.classList.toggle('hidden', !config.accessToken);
 
     const searchButton = document.getElementById('btn-toggle-search');
     const searchInput = document.getElementById('recent-search-input');
@@ -1998,6 +2262,70 @@ function showMain() {
                 pickerContainer.querySelectorAll('.dur-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
             });
+        });
+    }
+
+    const startModeBtn = document.getElementById('btn-tunnel-start-mode');
+    if (startModeBtn && !startModeBtn.dataset.bound) {
+        startModeBtn.dataset.bound = '1';
+        startModeBtn.addEventListener('click', () => {
+            setTunnelMode(tunnelMode === 'start' ? null : 'start');
+        });
+    }
+
+    const joinModeBtn = document.getElementById('btn-tunnel-join-mode');
+    if (joinModeBtn && !joinModeBtn.dataset.bound) {
+        joinModeBtn.dataset.bound = '1';
+        joinModeBtn.addEventListener('click', () => {
+            setTunnelMode(tunnelMode === 'join' ? null : 'join');
+        });
+    }
+
+    const startTunnelBtn = document.getElementById('btn-start-tunnel');
+    if (startTunnelBtn && !startTunnelBtn.dataset.bound) {
+        startTunnelBtn.dataset.bound = '1';
+        startTunnelBtn.addEventListener('click', async () => {
+            try {
+                await handleStartTunnel();
+            } catch (err) {
+                showToast(err?.message || 'Failed to start tunnel.');
+            }
+        });
+    }
+
+    const joinTunnelBtn = document.getElementById('btn-join-tunnel');
+    if (joinTunnelBtn && !joinTunnelBtn.dataset.bound) {
+        joinTunnelBtn.dataset.bound = '1';
+        joinTunnelBtn.addEventListener('click', async () => {
+            try {
+                await handleJoinTunnel();
+            } catch (err) {
+                showToast(err?.message || 'Failed to join tunnel.');
+            }
+        });
+    }
+
+    const confirmTunnelBtn = document.getElementById('btn-confirm-tunnel');
+    if (confirmTunnelBtn && !confirmTunnelBtn.dataset.bound) {
+        confirmTunnelBtn.dataset.bound = '1';
+        confirmTunnelBtn.addEventListener('click', async () => {
+            try {
+                await handleConfirmTunnel();
+            } catch (err) {
+                showToast(err?.message || 'Failed to confirm tunnel.');
+            }
+        });
+    }
+
+    const endTunnelBtn = document.getElementById('btn-end-tunnel');
+    if (endTunnelBtn && !endTunnelBtn.dataset.bound) {
+        endTunnelBtn.dataset.bound = '1';
+        endTunnelBtn.addEventListener('click', async () => {
+            try {
+                await handleEndTunnel();
+            } catch (err) {
+                showToast(err?.message || 'Failed to end tunnel.');
+            }
         });
     }
 }
@@ -2068,9 +2396,11 @@ function connectDesktopSocket() {
             if (payload?.type === 'new_file') {
                 if (payload?.source_device_id && payload.source_device_id === getOrCreateApproverDeviceId()) {
                     loadRecentFiles();
+                    if (activeTunnel?.id) refreshTunnelState();
                     return;
                 }
                 loadRecentFiles();
+                if (activeTunnel?.id) refreshTunnelState();
             }
         } catch (_) {
         }
@@ -2375,7 +2705,12 @@ async function uploadFiles(paths) {
             if (statusText) statusText.innerText = `Assembling ${fileName}…`;
             await pollAssemblyStatus(session_id);
 
-            const finalizePayload = { session_id, duration: config.duration };
+            const finalizePayload = { session_id };
+            if (activeTunnel?.id) {
+                finalizePayload.tunnel_id = activeTunnel.id;
+            } else {
+                finalizePayload.duration = config.duration;
+            }
             if (config.accessToken) {
                 finalizePayload.device_id = getOrCreateApproverDeviceId();
                 finalizePayload.wrapped_dek_b64 = wrappedDekB64;
@@ -2385,6 +2720,9 @@ async function uploadFiles(paths) {
             }
             const finalRes = await uploadFinalize(config, finalizePayload);
             if (!finalRes.ok) throw new Error('Finalize failed');
+            if (activeTunnel?.id) {
+                refreshTunnelState();
+            }
 
         } catch (err) {
             console.error('Upload error for', fileName, ':', err);

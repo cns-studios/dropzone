@@ -198,6 +198,21 @@
                 </div>
             </div>
 
+            <div id="tunnel-end-wrap" class="tunnel-end-wrap hidden">
+                <button id="btn-end-tunnel" class="btn btn-muted tunnel-end-btn">End tunnel session</button>
+            </div>
+
+            <div id="tunnel-section" class="tunnel-list-block recent-section hidden">
+                <div class="recent-header">
+                    <span class="section-label recent-label">Tunnel</span>
+                    <div class="recent-search">
+                        <span id="tunnel-count" class="section-label" style="margin-bottom:0; text-transform:none; letter-spacing:0; color:var(--dim);">0 files</span>
+                    </div>
+                </div>
+                <div id="tunnel-empty" class="empty-state">No files in this tunnel yet.</div>
+                <div id="tunnel-file-list" class="file-list hidden"></div>
+            </div>
+
             <div class="section recent-section">
                 <div class="recent-header">
                     <span id="recent-label" class="section-label recent-label">Recently uploaded</span>
@@ -210,6 +225,40 @@
                 </div>
                 <div id="no-results" class="empty-state hidden">No results found.</div>
                 <div id="file-list" class="file-list"></div>
+                <div id="tunnel-controls" class="tunnel-controls-block tunnel-controls">
+                    <div class="tunnel-controls-row tunnel-mode-row">
+                        <button id="btn-tunnel-start-mode" class="btn btn-muted tunnel-btn">Start tunnel</button>
+                        <button id="btn-tunnel-join-mode" class="btn btn-muted tunnel-btn">Join tunnel</button>
+                    </div>
+
+                    <div id="tunnel-start-panel" class="tunnel-panel hidden">
+                        <div class="tunnel-controls-row">
+                            <select id="tunnel-duration" class="tunnel-duration-select">
+                                <option value="10m">10 minutes</option>
+                                <option value="30m">30 minutes</option>
+                                <option value="1h" selected>1 hour</option>
+                                <option value="2h">2 hours</option>
+                                <option value="4h">4 hours</option>
+                                <option value="8h">8 hours</option>
+                                <option value="12h">12 hours</option>
+                            </select>
+                            <button id="btn-start-tunnel" class="btn btn-muted tunnel-btn">Start now</button>
+                        </div>
+                    </div>
+
+                    <div id="tunnel-join-panel" class="tunnel-panel hidden">
+                        <div class="tunnel-controls-row">
+                            <input id="tunnel-code-input" class="tunnel-code-input" type="text" placeholder="Enter tunnel code" maxlength="6" autocomplete="off" spellcheck="false" />
+                            <button id="btn-join-tunnel" class="btn btn-muted tunnel-btn">Join now</button>
+                        </div>
+                    </div>
+
+                    <div id="tunnel-meta" class="tunnel-meta hidden"></div>
+                    <div id="tunnel-qr" class="tunnel-qr hidden"></div>
+                    <div id="tunnel-confirm-row" class="tunnel-controls-row hidden">
+                        <button id="btn-confirm-tunnel" class="btn btn-muted tunnel-btn">Confirm connection</button>
+                    </div>
+                </div>
             </div>
         </div>
 
