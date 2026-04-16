@@ -39,8 +39,10 @@ let toastTimer = null;
 let qrDebugTimer = null;
 let desktopSocket = null;
 let desktopSocketRetryTimer = null;
+let desktopSocketRetryCount = 0;
 let enrollmentSocket = null;
 let enrollmentSocketRetryTimer = null;
+let enrollmentSocketRetryCount = 0;
 let approvalPollTimer = null;
 let approvalWaitState = null;
 let enrollmentPopupOpen = false;
@@ -49,6 +51,7 @@ let tunnelFilesCache = [];
 let tunnelPollTimer = null;
 let tunnelMode = null;
 const pressedKeys = new Set();
+const MAX_WS_RETRIES = 5;
 
 const UPDATE_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const LAST_NOTIFIED_VERSION_KEY = 'dropzone_last_notified_update';
@@ -2343,6 +2346,7 @@ function disconnectDesktopSocket() {
         }
         desktopSocket = null;
     }
+    desktopSocketRetryCount = 0;
 }
 
 function disconnectEnrollmentSocket() {
@@ -2358,6 +2362,7 @@ function disconnectEnrollmentSocket() {
         }
         enrollmentSocket = null;
     }
+    enrollmentSocketRetryCount = 0;
 }
 
 function connectDesktopSocket() {
@@ -2404,6 +2409,10 @@ function connectDesktopSocket() {
             }
         } catch (_) {
         }
+    };
+
+    desktopSocket.onopen = () => {
+        desktopSocketRetryCount = 0;
     };
 
     desktopSocket.onclose = () => {
@@ -2463,6 +2472,10 @@ function connectEnrollmentSocket() {
         refreshPendingEnrollments();
     };
 
+    enrollmentSocket.onopen = () => {
+        enrollmentSocketRetryCount = 0;
+    };
+
     enrollmentSocket.onclose = () => {
         scheduleEnrollmentSocketReconnect();
     };
@@ -2476,23 +2489,81 @@ function connectEnrollmentSocket() {
 }
 
 function scheduleDesktopSocketReconnect() {
+    if (desktopSocketRetryCount >= MAX_WS_RETRIES) {
+        return;
+    }
     if (desktopSocketRetryTimer) {
         clearTimeout(desktopSocketRetryTimer);
     }
+    desktopSocketRetryCount += 1;
     desktopSocketRetryTimer = setTimeout(() => {
         desktopSocketRetryTimer = null;
+        if (desktopSocketRetryCount === MAX_WS_RETRIES) {
+            showToast('Live file updates are temporarily unavailable.');
+        }
         connectDesktopSocket();
     }, 4000);
 }
 
 function scheduleEnrollmentSocketReconnect() {
+    if (enrollmentSocketRetryCount >= MAX_WS_RETRIES) {
+        return;
+    }
     if (enrollmentSocketRetryTimer) {
         clearTimeout(enrollmentSocketRetryTimer);
     }
+    enrollmentSocketRetryCount += 1;
     enrollmentSocketRetryTimer = setTimeout(() => {
         enrollmentSocketRetryTimer = null;
+        if (enrollmentSocketRetryCount === MAX_WS_RETRIES) {
+            showToast('Enrollment live updates are temporarily unavailable.');
+        }
         connectEnrollmentSocket();
     }, 4000);
+}
+
+async function readErrorResponse(response, fallbackMessage) {
+    if (!response) return fallbackMessage;
+
+    let details = '';
+    try {
+        const payload = await response.json();
+        details = payload?.error || payload?.message || payload?.details || '';
+    } catch (_) {
+        try {
+            details = (await response.text()) || '';
+        } catch (_) {
+            details = '';
+        }
+    }
+
+    details = String(details || '').trim();
+    if (response.status === 429) {
+        return details || 'Rate limit reached (429). Please wait and try again.';
+    }
+    if (details) {
+        return details;
+    }
+    return `${fallbackMessage} (HTTP ${response.status || 'unknown'})`;
+}
+
+function summarizeUploadError(err) {
+    const message = String(err?.message || err || '').trim();
+    const lower = message.toLowerCase();
+
+    if (lower.includes('429') || lower.includes('rate limit')) {
+        return 'Upload blocked by rate limit. Please wait and retry.';
+    }
+    if (lower.includes('invalid bearer token') || lower.includes('missing bearer token') || lower.includes('unauthorized')) {
+        return 'Upload failed: your sign-in session is invalid. Sign in again.';
+    }
+    if (lower.includes('network/cors request failed') || lower.includes('failed to fetch') || lower.includes('networkerror')) {
+        return 'Upload failed due to a network or connectivity error.';
+    }
+    if (message) {
+        return message;
+    }
+    return 'Upload failed unexpectedly.';
 }
 
 function showSettings() {
@@ -2677,7 +2748,9 @@ async function uploadFiles(paths) {
                 total_chunks: totalChunks,
                 chunk_size: CHUNK_SIZE,
             });
-            if (!initRes.ok) throw new Error('Init failed: ' + await initRes.text());
+            if (!initRes.ok) {
+                throw new Error(await readErrorResponse(initRes, 'Upload initialization failed'));
+            }
             const { session_id } = await initRes.json();
 
             for (let ci = 0; ci < totalChunks; ci++) {
@@ -2692,7 +2765,9 @@ async function uploadFiles(paths) {
                 form.append('chunk',       new File([chunkBytes], 'chunk', { type: 'application/octet-stream' }));
 
                 const chunkRes = await uploadChunk(config, form);
-                if (!chunkRes.ok) throw new Error('Chunk upload failed at index ' + ci);
+                if (!chunkRes.ok) {
+                    throw new Error(await readErrorResponse(chunkRes, `Chunk upload failed at index ${ci}`));
+                }
 
                 const fileProgress  = (ci + 1) / totalChunks;
                 const totalProgress = (i + fileProgress) / paths.length;
@@ -2700,7 +2775,9 @@ async function uploadFiles(paths) {
             }
 
             const completeRes = await uploadComplete(config, session_id);
-            if (!completeRes.ok) throw new Error('Complete failed');
+            if (!completeRes.ok) {
+                throw new Error(await readErrorResponse(completeRes, 'Upload completion failed'));
+            }
 
             if (statusText) statusText.innerText = `Assembling ${fileName}…`;
             await pollAssemblyStatus(session_id);
@@ -2719,14 +2796,18 @@ async function uploadFiles(paths) {
                 finalizePayload.dek_wrap_version = 1;
             }
             const finalRes = await uploadFinalize(config, finalizePayload);
-            if (!finalRes.ok) throw new Error('Finalize failed');
+            if (!finalRes.ok) {
+                throw new Error(await readErrorResponse(finalRes, 'Upload finalize failed'));
+            }
             if (activeTunnel?.id) {
                 refreshTunnelState();
             }
 
         } catch (err) {
             console.error('Upload error for', fileName, ':', err);
-            if (statusText) statusText.innerText = `Error uploading ${fileName}`;
+            const summary = summarizeUploadError(err);
+            showToast(`${fileName}: ${summary}`);
+            if (statusText) statusText.innerText = `Error uploading ${fileName}: ${summary}`;
         }
     }
 

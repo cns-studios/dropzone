@@ -32,8 +32,12 @@ function asBlob(data) {
 
 export async function httpRequest(url, options = {}) {
     const tauri = getTauriApi();
+    const isMultipartFormData =
+        typeof FormData !== 'undefined' && options?.body instanceof FormData;
 
-    if (tauri) {
+    // Tauri HTTP plugin currently has unstable FormData blob handling in this app.
+    // Use native fetch for multipart payloads to avoid InvalidStateError on chunks.
+    if (tauri && !isMultipartFormData) {
         try {
             const pluginHttp = await import('@tauri-apps/plugin-http');
             const tauriFetch = pluginHttp?.fetch;
