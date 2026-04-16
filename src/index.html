@@ -13,7 +13,45 @@
             <p class="app-loading-text">Loading Dropzone...</p>
         </div>
 
-        <div id="onboarding" class="screen">
+        <div id="onboarding-legal" class="screen">
+            <div class="titlebar">
+                <div class="titlebar-inner">
+                    <span style="font-size:14px;font-weight:700;color:var(--text);">Dropzone</span>
+                    <div class="topbar-right">
+                        <div class="icon-btn" id="btn-window-minimize-legal" title="Minimize">
+                            <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+                        </div>
+                        <div class="icon-btn" id="btn-window-close-legal" title="Close">
+                            <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="legal-wrap">
+                <div class="ob-icon-wrap">
+                    <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h6"/></svg>
+                </div>
+                <div class="ob-title">Terms and privacy</div>
+                <div class="ob-sub">Please review and accept before using Dropzone.</div>
+
+                <div class="tos-gate" id="tos-gate">
+                    <div class="tos-title">Before you continue</div>
+                    <p class="tos-copy">By continuing, you agree to the current Terms of Service and Privacy Policy.</p>
+                    <div class="tos-links">
+                        <a href="https://shareit.cns-studios.com/tos" target="_blank" rel="noopener noreferrer">Terms of Service</a>
+                        <a href="https://shareit.cns-studios.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+                    </div>
+                    <div class="tos-actions">
+                        <button class="btn btn-primary" id="btn-tos-accept">Accept</button>
+                        <button class="btn btn-muted" id="btn-tos-decline">Decline</button>
+                    </div>
+                    <p class="tos-status" id="tos-status"></p>
+                </div>
+            </div>
+        </div>
+
+        <div id="onboarding" class="screen hidden">
             <div class="titlebar">
                 <div class="titlebar-inner">
                     <span style="font-size:14px;font-weight:700;color:var(--text);">Dropzone</span>
@@ -74,6 +112,7 @@
                     <input type="text" id="server-url" placeholder="https://shareit.cns-studios.com" />
                 </div>
             </div>
+
             <button class="btn btn-primary" id="btn-save">Get started →</button>
             <button class="btn btn-muted" id="btn-oauth">Sign in with CNS account</button>
             <p class="hint">Open anytime with <strong>Ctrl + Shift + D</strong></p>

@@ -92,6 +92,18 @@ body{
     justify-content:flex-start;
 }
 
+#onboarding-legal{
+    align-items:center;
+    justify-content:flex-start;
+}
+
+.legal-wrap{
+    width:100%;
+    max-width:560px;
+    margin:auto;
+    padding:28px 24px 24px;
+}
+
 .ob-icon-wrap{
     width:56px;height:56px;
     background:var(--accent-light);
@@ -173,6 +185,74 @@ body{
     font-size:11.5px;color:var(--dimmer);margin-top:12px;text-align:center;width:100%;
 }
 .hint strong{color:var(--dim);}
+
+.tos-gate{
+    width:100%;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:12px;
+    margin:2px 0 12px;
+}
+
+.tos-title{
+    font-size:12.5px;
+    font-weight:800;
+    color:var(--text);
+    margin-bottom:4px;
+}
+
+.tos-copy{
+    font-size:11.5px;
+    color:var(--dim);
+    line-height:1.5;
+}
+
+.tos-links{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-top:8px;
+}
+
+.tos-links a{
+    font-size:11.5px;
+    font-weight:700;
+    color:var(--accent);
+    text-decoration:none;
+}
+
+.tos-links a:hover{
+    text-decoration:underline;
+}
+
+.tos-actions{
+    display:flex;
+    gap:8px;
+    margin-top:10px;
+}
+
+.tos-actions .btn{
+    margin-top:0;
+    flex:1;
+}
+
+.tos-status{
+    margin-top:8px;
+    min-height:16px;
+    font-size:11px;
+    font-weight:700;
+    color:var(--dim);
+}
+
+.tos-status.accepted{
+    color:var(--green);
+}
+
+.tos-status.pending{
+    color:#9b6b3f;
+}
 
 /* ── TITLEBAR ── */
 .titlebar{

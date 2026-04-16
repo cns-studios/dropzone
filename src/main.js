@@ -43,6 +43,8 @@ const pressedKeys = new Set();
 
 const UPDATE_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const LAST_NOTIFIED_VERSION_KEY = 'dropzone_last_notified_update';
+const TOS_CURRENT_VERSION = '2026-04-05';
+const TOS_ACCEPTED_VERSION_KEY = 'dropzone_tos_accepted_version';
 
 const CHUNK_SIZE = 2 * 1024 * 1024; 
 
@@ -77,6 +79,58 @@ loadConfig();
 function clearStoredOAuthState() {
     localStorage.removeItem('dropzone_access_token');
     localStorage.removeItem('dropzone_owner');
+}
+
+function getAcceptedTosVersion() {
+    return localStorage.getItem(TOS_ACCEPTED_VERSION_KEY) || '';
+}
+
+function hasAcceptedCurrentTos() {
+    return getAcceptedTosVersion() === TOS_CURRENT_VERSION;
+}
+
+function markTosAccepted() {
+    localStorage.setItem(TOS_ACCEPTED_VERSION_KEY, TOS_CURRENT_VERSION);
+}
+
+function clearSessionKeepTos() {
+    const acceptedVersion = getAcceptedTosVersion();
+    localStorage.clear();
+    if (acceptedVersion) {
+        localStorage.setItem(TOS_ACCEPTED_VERSION_KEY, acceptedVersion);
+    }
+}
+
+function renderTosStatus() {
+    const tosStatus = document.getElementById('tos-status');
+    const saveBtn = document.getElementById('btn-save');
+    const oauthBtn = document.getElementById('btn-oauth');
+    if (!tosStatus) return;
+
+    if (hasAcceptedCurrentTos()) {
+        tosStatus.textContent = `Accepted Terms version ${TOS_CURRENT_VERSION}.`;
+        tosStatus.classList.remove('pending');
+        tosStatus.classList.add('accepted');
+        if (saveBtn) saveBtn.disabled = false;
+        if (oauthBtn) oauthBtn.disabled = false;
+        return;
+    }
+
+    tosStatus.textContent = 'You must accept before continuing.';
+    tosStatus.classList.remove('accepted');
+    tosStatus.classList.add('pending');
+    if (saveBtn) saveBtn.disabled = true;
+    if (oauthBtn) oauthBtn.disabled = true;
+}
+
+async function quitAppCompletely() {
+    try {
+        await tauriInvoke('quit_app');
+        return;
+    } catch (err) {
+        console.warn('quit_app command failed:', err);
+    }
+    window.close();
 }
 
 function oauthErrorMessage(err) {
@@ -154,7 +208,7 @@ function handleOAuthSessionInvalidation() {
     resetOAuthToOnboarding('Logged out, please sign in again');
 }
 
-let onboardingScreen, mainScreen, dropArea, statusText;
+let legalScreen, onboardingScreen, mainScreen, dropArea, statusText;
 let recentFilesCache = [];
 let recentSearchQuery = '';
 let recentSearchOpen = false;
@@ -989,6 +1043,11 @@ function bindWindowControlButtons() {
             await appWindow.minimize();
         }
     });
+    bind('btn-window-minimize-legal', async () => {
+        if (appWindow?.minimize) {
+            await appWindow.minimize();
+        }
+    });
     bind('btn-window-minimize-approval', async () => {
         if (appWindow?.minimize) {
             await appWindow.minimize();
@@ -1007,6 +1066,13 @@ function bindWindowControlButtons() {
         window.close();
     });
     bind('btn-window-close-onboarding', async () => {
+        if (appWindow?.hide) {
+            await appWindow.hide();
+            return;
+        }
+        window.close();
+    });
+    bind('btn-window-close-legal', async () => {
         if (appWindow?.hide) {
             await appWindow.hide();
             return;
@@ -1446,6 +1512,7 @@ async function verifyKey(url, key) {
 }
 
 async function init() {
+    legalScreen      = document.getElementById('onboarding-legal');
     onboardingScreen = document.getElementById('onboarding');
     mainScreen       = document.getElementById('main-drop');
     dropArea         = document.getElementById('drop-area');
@@ -1464,11 +1531,32 @@ async function init() {
         stopApprovalPolling();
         disconnectDesktopSocket();
         disconnectEnrollmentSocket();
-        localStorage.clear();
+        clearSessionKeepTos();
         window.location.reload();
     });
 
+    document.getElementById('btn-tos-accept')?.addEventListener('click', () => {
+        markTosAccepted();
+        renderTosStatus();
+        showOnboarding();
+    });
+
+    document.getElementById('btn-tos-decline')?.addEventListener('click', () => {
+        quitAppCompletely();
+    });
+
+    renderTosStatus();
+
     document.getElementById('btn-save').addEventListener('click', async () => {
+        if (!hasAcceptedCurrentTos()) {
+            renderTosStatus();
+            await showModal({
+                title: 'Terms not accepted',
+                message: 'Please accept the Terms of Service and Privacy Policy before continuing.',
+            });
+            return;
+        }
+
         const key = document.getElementById('api-key').value.trim();
         let url   = document.getElementById('server-url').value.trim();
 
@@ -1510,6 +1598,15 @@ async function init() {
     });
 
     oauthBtn?.addEventListener('click', async () => {
+        if (!hasAcceptedCurrentTos()) {
+            renderTosStatus();
+            await showModal({
+                title: 'Terms not accepted',
+                message: 'Please accept the Terms of Service and Privacy Policy before continuing.',
+            });
+            return;
+        }
+
         let url = 'https://shareit.cns-studios.com';
         if (url.endsWith('/')) url = url.slice(0, -1);
 
@@ -1562,7 +1659,7 @@ async function init() {
         stopApprovalPolling();
         disconnectDesktopSocket();
         disconnectEnrollmentSocket();
-        localStorage.clear();
+        clearSessionKeepTos();
         window.location.reload();
     });
 
@@ -1594,6 +1691,11 @@ async function init() {
     }
 
     try {
+        if (!hasAcceptedCurrentTos()) {
+            showOnboarding();
+            return;
+        }
+
         if (config.accessToken && config.serverUrl) {
             try {
                 const ready = await ensureOAuthDeviceReady();
@@ -1806,14 +1908,34 @@ function showOnboarding() {
     hideApprovalWaitScreen();
     document.getElementById('enrollment-popup')?.classList.add('hidden');
     enrollmentPopupOpen = false;
+
+    if (!hasAcceptedCurrentTos()) {
+        showLegalGate();
+        return;
+    }
+
+    legalScreen?.classList.add('hidden');
     onboardingScreen.classList.remove('hidden');
     mainScreen.classList.add('hidden');
     document.getElementById('settings').classList.add('hidden');
 }
 
+function showLegalGate() {
+    if (!legalScreen) return;
+    hideApprovalWaitScreen();
+    document.getElementById('enrollment-popup')?.classList.add('hidden');
+    enrollmentPopupOpen = false;
+    legalScreen.classList.remove('hidden');
+    onboardingScreen?.classList.add('hidden');
+    mainScreen?.classList.add('hidden');
+    document.getElementById('settings')?.classList.add('hidden');
+    renderTosStatus();
+}
+
 function showMain() {
     if (!mainScreen) return;
     hideApprovalWaitScreen();
+    legalScreen?.classList.add('hidden');
     onboardingScreen.classList.add('hidden');
     document.getElementById('settings').classList.add('hidden');
     mainScreen.classList.remove('hidden');

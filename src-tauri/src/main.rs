@@ -927,6 +927,11 @@ fn poll_oauth_loopback(session_id: String) -> Result<OAuthPollResponse, String> 
     })
 }
 
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 fn main() {
     if std::env::args().any(|arg| arg == "--update") {
         let exit_code = match run_cli_update() {
@@ -1008,7 +1013,8 @@ fn main() {
             download_and_install_update,
             desktop_device_api,
             start_oauth_loopback,
-            poll_oauth_loopback
+            poll_oauth_loopback,
+            quit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
