@@ -204,3 +204,47 @@ export function cancelUpload(config, sessionId) {
         body: JSON.stringify({ session_id: sessionId }),
     });
 }
+
+export function startTunnel(config, payload) {
+    return httpRequest(`${config.serverUrl}/desktop/me/tunnels/start`, {
+        method: 'POST',
+        headers: authHeaders(config, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+    });
+}
+
+export function joinTunnel(config, payload) {
+    return httpRequest(`${config.serverUrl}/desktop/me/tunnels/join`, {
+        method: 'POST',
+        headers: authHeaders(config, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+    });
+}
+
+export function getTunnel(config, tunnelId) {
+    return httpRequest(`${config.serverUrl}/desktop/me/tunnels/${encodeURIComponent(tunnelId)}`, {
+        headers: authHeaders(config),
+    });
+}
+
+export function listTunnelFiles(config, tunnelId) {
+    return httpRequest(`${config.serverUrl}/desktop/me/tunnels/${encodeURIComponent(tunnelId)}/files`, {
+        headers: authHeaders(config),
+    });
+}
+
+export function confirmTunnel(config, tunnelId, payload = {}) {
+    return httpRequest(`${config.serverUrl}/desktop/me/tunnels/${encodeURIComponent(tunnelId)}/confirm`, {
+        method: 'POST',
+        headers: authHeaders(config, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+    });
+}
+
+export function endTunnel(config, tunnelId, payload = {}) {
+    return httpRequest(`${config.serverUrl}/desktop/me/tunnels/${encodeURIComponent(tunnelId)}`, {
+        method: 'DELETE',
+        headers: authHeaders(config, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+    });
+}
