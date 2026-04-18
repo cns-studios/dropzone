@@ -198,10 +198,6 @@
                 </div>
             </div>
 
-            <div id="tunnel-end-wrap" class="tunnel-end-wrap hidden">
-                <button id="btn-end-tunnel" class="btn btn-muted tunnel-end-btn">End tunnel session</button>
-            </div>
-
             <div id="tunnel-section" class="tunnel-list-block recent-section hidden">
                 <div class="recent-header">
                     <span class="section-label recent-label">Tunnel</span>
@@ -253,7 +249,12 @@
                         </div>
                     </div>
 
-                    <div id="tunnel-meta" class="tunnel-meta hidden"></div>
+                    <div id="tunnel-meta" class="tunnel-meta hidden">
+                        <span id="tunnel-meta-text" class="tunnel-meta-text"></span>
+                        <button id="btn-end-tunnel" class="icon-btn tunnel-exit-btn" title="End tunnel session" aria-label="End tunnel session">
+                            <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                        </button>
+                    </div>
                     <div id="tunnel-qr" class="tunnel-qr hidden"></div>
                     <div id="tunnel-confirm-row" class="tunnel-controls-row hidden">
                         <button id="btn-confirm-tunnel" class="btn btn-muted tunnel-btn">Confirm connection</button>

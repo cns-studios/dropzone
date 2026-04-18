@@ -401,6 +401,7 @@ body{
 .file-list{
     display:flex;flex-direction:column;gap:4px;
     overflow-y:auto;flex:1;
+    min-height:120px;
 }
 .file-item{
     display:flex;align-items:center;gap:10px;
@@ -620,10 +621,6 @@ body{
     margin:0 14px 10px;
 }
 
-.tunnel-end-btn{
-    width:100%;
-}
-
 .tunnel-controls{
     padding-top:4px;
     gap:8px;
@@ -635,6 +632,8 @@ body{
     border-top:1px solid var(--border);
     display:grid;
     gap:8px;
+    max-height:220px;
+    overflow-y:auto;
 }
 
 .tunnel-panel{
@@ -691,6 +690,28 @@ body{
     padding:8px 9px;
     font-size:11.5px;
     line-height:1.45;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+}
+
+.tunnel-meta-text{
+    flex:1;
+    min-width:0;
+}
+
+.tunnel-exit-btn{
+    width:26px;
+    height:26px;
+    flex-shrink:0;
+    border-radius:7px;
+    background:var(--window);
+}
+
+.tunnel-exit-btn svg{
+    width:12px;
+    height:12px;
 }
 
 .tunnel-qr{
@@ -700,6 +721,8 @@ body{
     padding:10px;
     display:flex;
     justify-content:center;
+    max-height:185px;
+    overflow:hidden;
 }
 
 .tunnel-qr img,

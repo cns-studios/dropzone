@@ -185,18 +185,21 @@ function isRecoverableOAuthBootstrapError(err) {
         || message.includes('token expired')
         || message.includes('session expired')
         || message.includes('invalid credentials')
-        || message.includes('login expired')
-        || message.includes('load failed')
-        || message.includes('failed to fetch')
-        || message.includes('networkerror');
+        || message.includes('login expired');
 }
 
 function isConnectivityOAuthError(err) {
-    const message = String(err?.message || '').toLowerCase();
+    const message = oauthErrorMessage(err);
     return message.includes('load failed')
         || message.includes('failed to fetch')
         || message.includes('networkerror')
-        || message.includes('cors');
+        || message.includes('cors')
+        || message.includes('timeout')
+        || message.includes('temporarily unavailable');
+}
+
+function shouldResetOAuthSession(err) {
+    return isRecoverableOAuthBootstrapError(err) && !isConnectivityOAuthError(err);
 }
 
 function resetOAuthToOnboarding(message) {
@@ -780,12 +783,30 @@ function renderTunnelFiles() {
 
         const row = document.createElement('div');
         row.className = 'file-item';
+        row.dataset.fileId = item.file_id || '';
+        row.dataset.fileName = item.filename || '';
         row.innerHTML = `
             <div class="file-ext" style="background:${bg};color:${color};">${ext}</div>
             <div class="file-info">
                 <div class="file-name">${item.filename || 'Unnamed file'}</div>
                 <div class="file-meta">${meta}</div>
             </div>`;
+
+        const downloadButton = document.createElement('button');
+        downloadButton.className = 'file-dl';
+        downloadButton.type = 'button';
+        downloadButton.title = 'Download';
+        downloadButton.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 3v11M12 14l-4-4M12 14l4-4M4 20h16"/></svg>';
+        downloadButton.addEventListener('click', async () => {
+            try {
+                await downloadAndSaveRecentFile(item.file_id, item.filename);
+            } catch (err) {
+                console.error('Tunnel download failed:', err);
+                showToast(err?.message || 'Download failed.');
+            }
+        });
+
+        row.appendChild(downloadButton);
         list.appendChild(row);
     });
 }
@@ -805,19 +826,28 @@ function setTunnelMode(mode) {
 
 function applyTunnelUi() {
     const section = document.getElementById('tunnel-section');
-    const endWrap = document.getElementById('tunnel-end-wrap');
+    const controls = document.getElementById('tunnel-controls');
+    const modeRow = document.querySelector('.tunnel-mode-row');
+    const startPanel = document.getElementById('tunnel-start-panel');
+    const joinPanel = document.getElementById('tunnel-join-panel');
     const meta = document.getElementById('tunnel-meta');
+    const metaText = document.getElementById('tunnel-meta-text');
     const qr = document.getElementById('tunnel-qr');
     const confirmRow = document.getElementById('tunnel-confirm-row');
     const isActive = !!activeTunnel?.id;
 
     section?.classList.toggle('hidden', !isActive);
-    endWrap?.classList.toggle('hidden', !isActive);
+    controls?.classList.toggle('hidden', !config.accessToken);
 
     if (!isActive) {
+        modeRow?.classList.remove('hidden');
+        startPanel?.classList.add('hidden');
+        joinPanel?.classList.add('hidden');
         if (meta) {
             meta.classList.add('hidden');
-            meta.textContent = '';
+        }
+        if (metaText) {
+            metaText.textContent = '';
         }
         if (qr) {
             qr.classList.add('hidden');
@@ -833,8 +863,14 @@ function applyTunnelUi() {
     const expiresAt = activeTunnel.expires_at ? timeAgo(activeTunnel.expires_at) : 'soon';
     if (meta) {
         meta.classList.remove('hidden');
-        meta.textContent = `Tunnel code ${activeTunnel.code} · Status ${activeTunnel.status} · Expires ${expiresAt}`;
     }
+    if (metaText) {
+        metaText.textContent = `Tunnel code ${activeTunnel.code} · Status ${activeTunnel.status} · Expires ${expiresAt}`;
+    }
+
+    modeRow?.classList.add('hidden');
+    startPanel?.classList.add('hidden');
+    joinPanel?.classList.add('hidden');
 
     const waitingConfirm = !activeTunnel.initiator_confirmed || !activeTunnel.peer_confirmed;
     confirmRow?.classList.toggle('hidden', !waitingConfirm);
@@ -867,7 +903,7 @@ async function refreshTunnelState() {
     try {
         const detailRes = await getTunnel(config, activeTunnel.id);
         if (!detailRes.ok) {
-            if (detailRes.status === 404 || detailRes.status === 410) {
+            if (detailRes.status === 403 || detailRes.status === 404 || detailRes.status === 410) {
                 activeTunnel = null;
                 tunnelFilesCache = [];
                 applyTunnelUi();
@@ -886,6 +922,36 @@ async function refreshTunnelState() {
         renderTunnelFiles();
     } catch (err) {
         console.error('Tunnel refresh failed:', err);
+    }
+}
+
+async function parseApiError(response, fallbackMessage) {
+    let payload = null;
+    try {
+        payload = await response.json();
+    } catch (_) {
+        payload = null;
+    }
+
+    if (payload && typeof payload === 'object') {
+        const message = payload.error || payload.message || payload.details;
+        if (message) {
+            return String(message);
+        }
+    }
+
+    try {
+        const text = await response.text();
+        if (!text) return fallbackMessage;
+        try {
+            const parsed = JSON.parse(text);
+            const parsedMessage = parsed?.error || parsed?.message || parsed?.details;
+            return parsedMessage ? String(parsedMessage) : text;
+        } catch (_) {
+            return text;
+        }
+    } catch (_) {
+        return fallbackMessage;
     }
 }
 
@@ -917,7 +983,7 @@ async function handleStartTunnel() {
         device_id: getOrCreateApproverDeviceId(),
     });
     if (!res.ok) {
-        throw new Error(await res.text() || 'Failed to start tunnel');
+        throw new Error(await parseApiError(res, 'Failed to start tunnel'));
     }
 
     const payload = await res.json();
@@ -951,7 +1017,7 @@ async function handleJoinTunnel() {
         device_id: getOrCreateApproverDeviceId(),
     });
     if (!res.ok) {
-        throw new Error(await res.text() || 'Failed to join tunnel');
+        throw new Error(await parseApiError(res, 'Failed to join tunnel'));
     }
 
     const payload = await res.json();
@@ -961,7 +1027,6 @@ async function handleJoinTunnel() {
     startTunnelPolling();
 
     if (activeTunnel?.id) {
-        await confirmTunnel(config, activeTunnel.id, { device_id: getOrCreateApproverDeviceId() });
         await refreshTunnelState();
     }
     showToast('Tunnel joined.');
@@ -971,7 +1036,7 @@ async function handleConfirmTunnel() {
     if (!activeTunnel?.id) return;
     const res = await confirmTunnel(config, activeTunnel.id, { device_id: getOrCreateApproverDeviceId() });
     if (!res.ok) {
-        throw new Error(await res.text() || 'Failed to confirm tunnel');
+        throw new Error(await parseApiError(res, 'Failed to confirm tunnel'));
     }
     await refreshTunnelState();
     showToast('Tunnel connection confirmed.');
@@ -990,7 +1055,7 @@ async function handleEndTunnel() {
 
     const res = await endTunnel(config, activeTunnel.id, { device_id: getOrCreateApproverDeviceId() });
     if (!res.ok) {
-        throw new Error(await res.text() || 'Failed to end tunnel');
+        throw new Error(await parseApiError(res, 'Failed to end tunnel'));
     }
 
     activeTunnel = null;
@@ -1197,7 +1262,7 @@ async function checkOAuthApprovalStatus() {
         setApprovalWaitStatus('Still pending approval...');
         return false;
     } catch (err) {
-        if (isRecoverableOAuthBootstrapError(err)) {
+        if (shouldResetOAuthSession(err)) {
             resetOAuthToOnboardingSilently();
             return false;
         }
@@ -1219,7 +1284,7 @@ async function ensureOAuthDeviceReady() {
     try {
         registration = await registerOAuthDevice(deviceID);
     } catch (err) {
-        if (isRecoverableOAuthBootstrapError(err)) {
+        if (shouldResetOAuthSession(err)) {
             resetOAuthToOnboardingSilently();
             return false;
         }
@@ -1248,7 +1313,7 @@ async function ensureOAuthDeviceReady() {
     try {
         enrollment = await ensureEnrollmentForDevice(deviceID);
     } catch (err) {
-        if (isRecoverableOAuthBootstrapError(err)) {
+        if (shouldResetOAuthSession(err)) {
             resetOAuthToOnboardingSilently();
             return false;
         }
@@ -1965,9 +2030,13 @@ async function init() {
                 }
             } catch (err) {
                 console.error('OAuth device readiness failed:', err);
-                if (isRecoverableOAuthBootstrapError(err)) {
+                if (shouldResetOAuthSession(err)) {
                     clearStoredOAuthState();
                     loadConfig();
+                } else if (isConnectivityOAuthError(err)) {
+                    showMain();
+                    showToast('Could not validate trusted device yet. You remain signed in.');
+                    return;
                 } else {
                     await showModal({
                         title: 'OAuth setup failed',
