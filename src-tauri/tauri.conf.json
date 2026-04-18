@@ -1,6 +1,6 @@
 {
   "productName": "Dropzone",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "identifier": "com.dropzone.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
